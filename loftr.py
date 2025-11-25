@@ -2,6 +2,7 @@ import os
 import cv2
 import kornia as K
 import kornia.feature as KF
+import kornia.geometry.transform as KT
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import numpy as np
@@ -299,4 +300,123 @@ def plot_overlay(img_fix, img_mov):
 
     return fig
     
+def crop_margins(img, top, bottom, left, right):
+    B, C, H, W = img.shape
+    y1 = top
+    y2 = H - bottom
+    x1 = left
+    x2 = W - right
 
+    # top-left, top-right, bottom-right and bottom-left
+    tl = [x1, y1]
+    tr = [x2, y1]
+    bl = [x1, y2]
+    br = [x2, y2]
+
+    # build index tensor
+    # each ROI: [y1, y2, x1, x2]
+    boxes = torch.tensor([[tl, tr, br, bl]], device=img.device)
+    # print(boxes, boxes.shape)
+    # boxes = boxes.repeat(B, 3)
+    # print(boxes, boxes.shape)
+
+    return KT.crop_by_indices(img, boxes)
+
+
+# metrics
+
+def ncc(img1, img2):
+
+    if type(img1) == np.ndarray:
+        img1 = K.image_to_tensor(img1)
+    if type(img2) == np.ndarray:
+        img2 = K.image_to_tensor(img2)
+
+    img1 = K.color.rgb_to_grayscale(img1)
+    img2 = K.color.rgb_to_grayscale(img2)
+    
+
+    img1 = img1 - img1.mean()
+    img2 = img2 - img2.mean()
+    std_img1 = torch.std(img1)
+    std_img2 = torch.std(img2)
+    return torch.sum(img1*img2) / (std_img1 * std_img2 * torch.numel(img1) + 1e-13)
+
+
+
+def histogram2d_scatter(img1, img2, bins=64, eps=1e-8):
+    """
+    a, b: (H,W) or flattened tensors of equal shape
+    bins: number of histogram bins per dimension
+    """
+
+    # flatten
+    img1 = img1.reshape(-1)
+    img2 = img2.reshape(-1)
+
+    # normalize into [0, bins-1]
+    img1_min, img1_max = img1.min(), img1.max()
+    img2_min, img2_max = img2.min(), img2.max()
+
+    img1_scaled = (img1 - img1_min) / (img1_max - img1_min + eps)
+    img2_scaled = (img2 - img2_min) / (img2_max - img2_min + eps)
+
+    img1_i = torch.clamp((img1_scaled * (bins - 1)).long(), 0, bins - 1)
+    img2_i = torch.clamp((img2_scaled * (bins - 1)).long(), 0, bins - 1)
+
+    # 2D histogram via scatter_add
+    hist = torch.zeros((bins, bins), device=img1.device)
+    hist.index_put_((img1_i, img2_i), torch.ones_like(img1_i, dtype=hist.dtype),
+                    accumulate=True)
+
+    return hist
+
+
+
+def mutual_information(img1, img2, bins=100):
+    if type(img1) == np.ndarray:
+        img1 = K.image_to_tensor(img1)
+    if type(img2) == np.ndarray:
+        img2 = K.image_to_tensor(img2)
+
+    img1 = K.color.rgb_to_grayscale(img1)
+    img2 = K.color.rgb_to_grayscale(img2)
+
+    # min_val = 0 # min(img1.min(), img2.min())
+    # max_val = 1 # max(img1.max(), img2.max())
+
+    # hist1 = torch.histc(img1, bins=bins, min=min_val, max=max_val)
+    # hist2 = torch.histc(img2, bins=bins, min=min_val, max=max_val)
+
+    # imgs = torch.cat([img1, img2])
+    # hist12 = torch.histc(imgs, bins=bins, min=min_val, max=max_val)
+
+    # non_zero = hist12 > 0
+
+    # hist1 /= torch.sum(hist1)
+    # hist2 /= torch.sum(hist2)
+    # hist12 /= torch.sum(hist12)
+    # print(hist1.min())
+    # print(hist2.min())
+    # print(hist12.min())
+    # print(torch.max(hist1[non_zero]*hist2[non_zero]))
+    # print(torch.max(hist12[non_zero] / (hist1[non_zero] * hist2[non_zero])))
+    # print(torch.max(torch.log( hist12[non_zero] / (hist1[non_zero] * hist2[non_zero]))))  
+
+    # mi = torch.sum(hist12[non_zero] * torch.log( hist12[non_zero] / (hist1[non_zero] * hist2[non_zero]) ))
+
+
+    hist2d = histogram2d_scatter(img1, img2, bins=bins)
+
+    # convert to distribution
+    p12 = hist2d / hist2d.sum()
+    p1 = p12.sum(1)     # (bins,)
+    p2 = p12.sum(0)     # (bins,)
+
+    # compute MI
+    p1_p2 = p1[:, None] * p2[None, :]
+    non_zero = p12 > 0
+
+    mi = torch.sum(p12[non_zero] * torch.log(p12[non_zero] / (p1_p2[non_zero] + 1e-13)))
+
+    return mi
