@@ -6,3 +6,6 @@ Strategies for exploiting the temporal context to improve consistency in symptom
 
 The results are expected to contribute to unlocking the temporal dimension of crop diseases, which is critical towards understanding resistance mechanisms and improving predictions and management of seasonal epidemics.
  
+
+# Attribution
+The directory `DatasetTools` and the utility functions it contains were developed by Jonas Anderegg. The full repository is available at git@github.com:and-jonas/sympathique-wheat.git
