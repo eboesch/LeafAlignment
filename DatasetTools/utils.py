@@ -79,8 +79,17 @@ def reject_outliers(data, tol=None, m=2.):
 
 
 def get_keypoints(file_path, shape):
-    # get key point coordinates from YOLO output
+
+    coords = pd.read_table(file_path, sep=r"[,\s]+", engine="python")
+    
+    # if file is already in pixel coordinates
+    if coords.shape[1] == 2 and list(coords.columns) == ["x", "y"]:
+        # Already pixel coordinates → just convert to list of tuples
+        return coords.to_numpy(dtype=float)
+
     coords = pd.read_table(file_path, header=None, sep=" ")
+    
+    # get key point coordinates from YOLO output
     x = coords.iloc[:, 5] * shape[1]
     y = coords.iloc[:, 6] * shape[0]
 
