@@ -18,6 +18,7 @@ from skimage.transform import PiecewiseAffineTransform
 from skimage.transform import AffineTransform
 from scipy.spatial import Delaunay
 from tqdm import tqdm
+import kornia as K
 
 
 class KeypointEditor:
@@ -84,10 +85,11 @@ class LeafDataset:
     def __init__(self, base_dir, leaf_uid=None, load=('images', 'tforms', 'rois', 'target_masks', 'target_images')):
         self.base_dir = base_dir
         self.leaf_uid = leaf_uid
-        self.series = utils.get_series(path_images=os.path.join(base_dir, "data", "*", "*"), leaf_uid=leaf_uid)[0]
+        self.series = utils.get_series(path_images=os.path.join(base_dir, "raw", "*", "*"), leaf_uid=leaf_uid)[0]
         self.image_uids = [os.path.basename(p) for p in self.series]
-        self.output_base = os.path.join(base_dir, "Output", self.leaf_uid)
-        self.output_ts = os.path.join(base_dir, "Output", "ts")
+        self.output_base = os.path.join(base_dir, "processed", self.leaf_uid)
+        self.output_reg = os.path.join(base_dir, "processed", "reg", self.leaf_uid)
+        self.output_ts = os.path.join(base_dir, "processed", "ts")
         self.shift_affine = np.array([[1, 0, 10000], [0, 1, 10000], [0, 0, 1]])
 
         # Initialize data containers
@@ -113,6 +115,7 @@ class LeafDataset:
 
     def _load_requested(self, load):
         if 'images' in load:
+            # self.images = [K.io.load_image(img_path, K.io.ImageLoadType.RGB32)[None, ...] for img_path in self.series]
             self.images = [Image.open(p) for p in self.series]
 
         if 'tforms' in load:
@@ -131,7 +134,7 @@ class LeafDataset:
                     self.tforms.append(None)
                     
         if 'rois' in load:
-            roi_dir = os.path.join(self.output_base, "roi")
+            roi_dir = os.path.join(self.output_reg, "roi")
             self.rois = []
             for path in self.series:
                 name = os.path.splitext(os.path.basename(path))[0]
@@ -169,8 +172,9 @@ class LeafDataset:
 
         if 'keypoints' in load:
             self.keypoints = []
+            kpts_dir = os.path.join(self.output_reg, "keypoints")
             for i, path in enumerate(self.series):
-                kpts_dir = os.path.join(os.path.dirname(path), "runs", "pose", "predict", "labels")
+                # kpts_dir = os.path.join(os.path.dirname(path), "runs", "pose", "predict", "labels")
                 name = os.path.splitext(os.path.basename(path))[0]
                 path_kpts = os.path.join(kpts_dir, f"{name}.txt")
                 if os.path.exists(path_kpts):
