@@ -28,7 +28,7 @@ def load_resize_image(img_path: str, H: int=375, W: int=600):
     return img
 
 
-def loftr_match(img_fix, img_mov):
+def loftr_match(img_fix, img_mov, verbose: bool=True, return_n_matches: bool=False):
     """
     Detects Feature matches between fixed and moving images using LoFTR
 
@@ -41,6 +41,12 @@ def loftr_match(img_fix, img_mov):
 
     # match with LoFTR
     matcher = KF.LoFTR(pretrained="outdoor")
+
+    # Add batch dim if needed
+    if img_fix.dim() == 3:
+        img_fix = img_fix.unsqueeze(0)
+    if img_mov.dim() == 3:
+        img_mov = img_mov.unsqueeze(0)
 
     input_dict = {
         "image0": K.color.rgb_to_grayscale(img_fix),  # LofTR works on grayscale images only
@@ -58,11 +64,16 @@ def loftr_match(img_fix, img_mov):
     _, inliers = cv2.findFundamentalMat(mkpts0.cpu().numpy(), mkpts1.cpu().numpy(), cv2.USAC_MAGSAC, 0.5, 0.999, 100000)
     inliers = inliers > 0
 
-    print(f"Total matches: {len(mkpts0)}")
-    print(f"Matches with Confidence > 0.5: {torch.sum(confidence > 0.5)}")
-    print(f"Inliers: {inliers.sum()} ({inliers.sum()/len(mkpts0):.2%})")
+    if verbose:
+        print(f"Total matches: {len(mkpts0)}")
+        print(f"Matches with Confidence > 0.5: {torch.sum(confidence > 0.5)}")
+        print(f"Inliers: {inliers.sum()} ({inliers.sum()/len(mkpts0):.2%})")
 
-    return mkpts0, mkpts1, confidence, inliers
+    if return_n_matches:
+        n_matches = {'total_matches': len(mkpts0), 'conf_matches': torch.sum(confidence > 0.5), 'inliers': inliers.sum() }
+        return mkpts0, mkpts1, confidence, inliers, n_matches
+    else:
+        return mkpts0, mkpts1, confidence, inliers
 
 def plot_matches(img_fix, keypts_fix, img_mov, keypts_mov, inliers, N_show: int=100, inliers_only: bool=True, vertical: bool=True):
     """
@@ -299,7 +310,29 @@ def plot_overlay(img_fix, img_mov):
     plt.show()
 
     return fig
+
+def plot_image_pair(img1, img2, img1_ind: int=None, img2_ind: int = 2, title: str=None):
+    if img1_ind is None:
+        img1_ind = 1
+    if img2_ind is None:
+        img2_ind = 2
+
+    fig, axs = plt.subplots(1, 2, figsize=(12,6))
+    axs[0].imshow(K.tensor_to_image(img1))
+    axs[0].set_title(f"Image {img1_ind}")
+    # axs[0].axes('off')
+
+    axs[1].imshow(K.tensor_to_image(img2))
+    axs[1].set_title(f"Image {img2_ind}")
+    if title is not None:
+        fig.suptitle(title, fontsize=22, y=0.86)
+    plt.tight_layout()
     
+    return fig, axs
+
+# ----------------- masking ------------------------------------------
+
+  
 def crop_margins(img, top, bottom, left, right):
     B, C, H, W = img.shape
     y1 = top
@@ -322,8 +355,138 @@ def crop_margins(img, top, bottom, left, right):
 
     return KT.crop_by_indices(img, boxes)
 
+def pil_to_kornia(pil_img):
+    np_img = np.array(pil_img)
+    tensor_img = K.image_to_tensor(np_img).float() / 255.0 
+    return tensor_img.unsqueeze(0)
 
-# metrics
+def keypoints_roi_to_image(kp_roi: np.ndarray, roi: dict):
+    """
+    kp_crop: (N,2) keypoints in crop coordinates (TXT)
+    roi: dict with rotation_matrix (2x3) and bounding_box
+    Returns: kp_full (N,2) in original image coordinates
+    """
+    kp_crop = kp_roi.astype(np.float64)
+
+    # 1) shift by top-left of bounding box to get coordinates in rotated image
+    box = np.asarray(roi["bounding_box"], dtype=np.float64)
+    bbox_min = box.min(axis=0)  # [x_min, y_min]
+    kp_rot_img = kp_crop + bbox_min  # coordinates in rotated image
+
+    # 2) invert rotation to map back to original image
+    R = np.asarray(roi["rotation_matrix"], dtype=np.float64)
+    rot = R[:, :2]
+    trans = R[:, 2:]
+    rot_inv = np.linalg.inv(rot)
+    kp_full = (kp_rot_img - trans.T) @ rot_inv.T
+
+    return kp_full
+
+def mask_leaf(img: torch.Tensor, keypts: np.ndarray, erode_px: int = 0, return_center: bool=True, return_bounds: bool=False):
+    img = pil_to_kornia(img)
+
+    B,C,H,W = img.shape
+    # Computes the convex hull of the keypoints.
+    hull = cv2.convexHull(keypts.astype(np.int32)) # Returns ordered list of points forming a polygon that encloses all the keypoints.
+    # center = np.mean(hull, axis=0)
+    mins = np.min(hull, axis=0)
+    maxs = np.max(hull, axis=0)
+    center = (maxs + mins)/2
+
+    # initialize empty mask
+    mask = np.zeros((H,W), dtype=np.uint8)
+    cv2.fillConvexPoly(mask, hull.reshape(-1,2), 1) # fill in convex hull with value 1
+    mask_t = torch.from_numpy(mask).float().to(img.device).unsqueeze(0) # convert mask to tensor and add channel dim
+    if erode_px > 0:
+        # FIXME
+        print("erosion not yet functional")
+        # kernel = torch.ones((erode_px,erode_px), dtype=torch.float32, device=mask_t.device)
+        # unsqueeze mask to add batch dim
+        # mask_t = morph.erosion(mask_t.unsqueeze(0), kernel, engine='convolution').squeeze(0) 
+    masked_img = img * mask_t
+    if return_center and return_bounds:
+        return masked_img, mask_t, center, (mins, maxs)
+    elif return_center:
+        return masked_img, mask_t, center
+    elif return_bounds:
+        return masked_img, mask_t, (mins, maxs)
+    else:
+        return masked_img, mask_t
+
+def scale_image(img: torch.Tensor, scale: float, center: np.array=None):
+    """
+    img: (C,H,W) or (B,C,H,W) torch tensor
+    scale: float >1 to enlarge
+    """
+    # Add batch dimension if necessary
+    if img.dim() == 3:
+        img = img.unsqueeze(0)  # (1,C,H,W)
+
+    B,C,H,W = img.shape
+    device = img.device
+    dtype = img.dtype
+
+    # Scale tensor: (B,2) float32 on same device
+    scale_tensor = torch.tensor([[scale, scale]], dtype=dtype, device=device).repeat(B,1)
+
+    if center is not None:
+        # can choose custom center through which to scale, default is the center of the tensor
+        center = torch.tensor(center, dtype=dtype, device=device).repeat(B,1)
+        img_scaled = K.geometry.transform.scale(img, scale_factor=scale_tensor, center=center)
+    else:
+        img_scaled = K.geometry.transform.scale(img, scale_factor=scale_tensor)
+
+    # Remove batch dim if needed
+    if img_scaled.shape[0] == 1:
+        img_scaled = img_scaled.squeeze(0)
+
+    return img_scaled
+
+
+def erode_mask_by_scaling(mask: torch.Tensor, scale: float):
+    """
+    mask: (1,H,W) or (B,1,H,W) torch tensor
+    scale: <1 to shrink the mask (simulate erosion)
+    Returns: resized mask with same original image size
+    """
+    # Add batch dim if needed
+    if mask.dim() == 3:
+        mask = mask.unsqueeze(0)  # (1,1,H,W)
+
+    B, C, H, W = mask.shape
+    device = mask.device
+    dtype = mask.dtype
+
+    # Resize mask: shrink by scale factor
+    new_H = int(H * scale)
+    new_W = int(W * scale)
+    mask_small = F.interpolate(mask, size=(new_H, new_W), mode='nearest')
+
+    # Pad back to original size and center
+    pad_top = (H - new_H) // 2
+    pad_bottom = H - new_H - pad_top
+    pad_left = (W - new_W) // 2
+    pad_right = W - new_W - pad_left
+
+    mask_eroded = F.pad(mask_small, (pad_left, pad_right, pad_top, pad_bottom), mode='constant', value=0)
+
+    # Remove batch dim if needed
+    if mask_eroded.shape[0] == 1:
+        mask_eroded = mask_eroded.squeeze(0)
+
+    return mask_eroded
+
+
+def erode_leaf(available_data, index):
+    # img = available_data['images'][index]
+    kpts_img = keypoints_roi_to_image(available_data['keypoints'][index], available_data['rois'][index])
+    masked_img, mask_t, center = mask_leaf(available_data['images'][index], kpts_img, erode_px=0, return_center=True, return_bounds=False)
+    img_scaled = scale_image(masked_img, 1.2, center)
+    masked_scaled_img = img_scaled * mask_t 
+    return masked_scaled_img
+
+
+# ------------- metrics ------------------------------------------
 
 def ncc(img1, img2):
 
