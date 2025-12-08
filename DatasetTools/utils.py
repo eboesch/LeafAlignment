@@ -13,22 +13,34 @@ from PIL import Image
 import pandas as pd
 
 
-def get_series(path_images, leaf_uid=None):
+def get_series(path_images, leaf_uid=None, verbose=False):
     """
     Creates two lists of file paths: to key point coordinate files and to images
     for each of the samples monitored over time, stored in date-wise folders.
     :return:
     """
+    if verbose:
+        print("Getting Series...")
     id_series = []
 
+    if verbose:
+        print("Getting paths...")
     images = glob.glob(f'{path_images}/*.JPG')
+    if verbose:
+        print("Extracting IDs...")
     image_image_id = ["_".join(os.path.basename(l).split("_")[2:4]).replace(".JPG", "") for l in images]
+    if verbose:
+        print("Removing duplicate IDs...")
     uniques = natsorted(np.unique(image_image_id))
 
+    if verbose:
+        print("Filtering by leaf_uid...")
     # filter by leaf_uid
     if leaf_uid: 
         uniques = [u for u in uniques if str(u) == str(leaf_uid)]
 
+    if verbose:
+        print("Compiling list...")
     # compile the lists
     for unique_sample in uniques:
         image_idx = [index for index, image_id in enumerate(image_image_id) if unique_sample == image_id]

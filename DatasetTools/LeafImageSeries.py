@@ -82,10 +82,12 @@ class KeypointEditor:
 
 class LeafDataset:
 
-    def __init__(self, base_dir, leaf_uid=None, load=('images', 'tforms', 'rois', 'target_masks', 'target_images')):
+    def __init__(self, base_dir, leaf_uid=None, load=('images', 'tforms', 'rois', 'target_masks', 'target_images'), verbose=False):
+        if verbose:
+            print("Initializing dataset...")
         self.base_dir = base_dir
         self.leaf_uid = leaf_uid
-        self.series = utils.get_series(path_images=os.path.join(base_dir, "raw", "*", "*"), leaf_uid=leaf_uid)[0]
+        self.series = utils.get_series(path_images=os.path.join(base_dir, "raw", "*", "*"), leaf_uid=leaf_uid, verbose=verbose)[0]
         self.image_uids = [os.path.basename(p) for p in self.series]
         self.output_base = os.path.join(base_dir, "processed", self.leaf_uid)
         self.output_reg = os.path.join(base_dir, "processed", "reg", self.leaf_uid)
@@ -108,17 +110,23 @@ class LeafDataset:
         self.target_images = None
         self.warped_images = None
 
-        self._load_requested(load)
+        if verbose:
+            print("Loading requested values...")
+        self._load_requested(load, verbose=verbose)
 
     def _extract_leaf_uid(self, path):
         return re.search(r'(ESWW00\d+_\d+)', path).group(1)
 
-    def _load_requested(self, load):
+    def _load_requested(self, load, verbose=False):
         if 'images' in load:
+            if verbose:
+                print("Loading images...")
             # self.images = [K.io.load_image(img_path, K.io.ImageLoadType.RGB32)[None, ...] for img_path in self.series]
             self.images = [Image.open(p) for p in self.series]
 
         if 'tforms' in load:
+            if verbose:
+                print("Loading transforms...")
             roi_dir = os.path.join(self.output_base, "roi")
             self.tforms = []
 
@@ -134,6 +142,8 @@ class LeafDataset:
                     self.tforms.append(None)
                     
         if 'rois' in load:
+            if verbose:
+                print("Loading ROIs...")
             roi_dir = os.path.join(self.output_reg, "roi")
             self.rois = []
             for path in self.series:
@@ -171,6 +181,8 @@ class LeafDataset:
             self.target_images = self._load_images_from_dir(target_dir)
 
         if 'keypoints' in load:
+            if verbose:
+                print("Loading keypoints...")
             self.keypoints = []
             kpts_dir = os.path.join(self.output_reg, "keypoints")
             for i, path in enumerate(self.series):
