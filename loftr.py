@@ -239,7 +239,7 @@ def plot_match_coverage(img_fix, keypts_fix, img_mov, keypts_mov, confidence):
 #     # kornia and torch expect C x H x W, while skimage & matplotlib expect H x W x C
 #     return img[0].permute(1, 2, 0)
 
-def tps_skimage(keypts_fix, keypts_mov, confidence, thrsld, img_mov):
+def tps_skimage(keypts_fix, keypts_mov, confidence, thrsld, img_mov, verbose=False):
     """
     Applies TPS to register moving image to fixed image. Keypoints are filtered by confidence.
 
@@ -251,10 +251,21 @@ def tps_skimage(keypts_fix, keypts_mov, confidence, thrsld, img_mov):
 
     img_fix_mks = keypts_fix[confidence > thrsld]
     img_mov_mks = keypts_mov[confidence > thrsld]
-
+    if verbose and (len(img_fix_mks) > 500):
+        print("Setting threshold..")
+    while (len(img_fix_mks) > 500):
+        thrsld += (1-thrsld)/5
+        img_fix_mks = keypts_fix[confidence > thrsld]
+        img_mov_mks = keypts_mov[confidence > thrsld]
+    if verbose:
+        print(f"Threshold set to {thrsld}")
 
     tps = ski.transform.ThinPlateSplineTransform()
+    if verbose:
+        print("Estimating TPS transform...")
     tps.estimate(img_fix_mks, img_mov_mks) # estimate transform from img_fix -> img_mov
+    if verbose:
+        print("Transforming moving image...")
     warped = ski.transform.warp(img_mov_reordered, tps) # warp uses inverse transform, i.e. img_mov -> img_fix
 
     return warped, tps
@@ -355,6 +366,30 @@ def crop_margins(img, top, bottom, left, right):
 
     return KT.crop_by_indices(img, boxes)
 
+def crop_img(img, x_min, x_max, y_min, y_max, center=None):
+    # add batch dimension if necessary
+    if img.dim() == 3:
+        img = img.unsqueeze(0)
+
+    B, C, H, W = img.shape
+
+    # top-left, top-right, bottom-right and bottom-left
+    tl = [x_min, y_min]
+    tr = [x_max, y_min]
+    bl = [x_min, y_max]
+    br = [x_max, y_max]
+
+    # build index tensor
+    boxes = torch.tensor([[tl, tr, br, bl]], device=img.device)
+
+    cropped_img = KT.crop_by_indices(img, boxes)
+
+    if center is not None:
+        new_center = center - [x_min, y_min]
+        return cropped_img, new_center
+    else:
+        return cropped_img 
+
 def pil_to_kornia(pil_img):
     np_img = np.array(pil_img)
     tensor_img = K.image_to_tensor(np_img).float() / 255.0 
@@ -405,11 +440,11 @@ def mask_leaf(img: torch.Tensor, keypts: np.ndarray, erode_px: int = 0, return_c
         # mask_t = morph.erosion(mask_t.unsqueeze(0), kernel, engine='convolution').squeeze(0) 
     masked_img = img * mask_t
     if return_center and return_bounds:
-        return masked_img, mask_t, center, (mins, maxs)
+        return masked_img, mask_t, center[0], [mins[0], maxs[0]]
     elif return_center:
-        return masked_img, mask_t, center
+        return masked_img, mask_t, center[0]
     elif return_bounds:
-        return masked_img, mask_t, (mins, maxs)
+        return masked_img, mask_t, [mins[0], maxs[0]]
     else:
         return masked_img, mask_t
 
@@ -485,6 +520,88 @@ def erode_leaf(available_data, index):
     masked_scaled_img = img_scaled * mask_t 
     return masked_scaled_img
 
+def erode_crop_leaf(available_data, index):
+    kpts_img = keypoints_roi_to_image(available_data['keypoints'][index], available_data['rois'][index])
+    masked_img, mask_t, center, bounds = mask_leaf(available_data['images'][index], kpts_img, erode_px=0, return_center=True, return_bounds=True)
+    x_min, y_min = bounds[0]
+    x_max, y_max = bounds[1]
+    cropped_img, new_center = crop_img(masked_img, x_min, x_max, y_min, y_max, center)
+    cropped_mask = crop_img(mask_t, x_min, x_max, y_min, y_max)
+    img_scaled = scale_image(cropped_img, 1.2, new_center)
+    masked_scaled_img = img_scaled * cropped_mask 
+    return masked_scaled_img
+
+
+# ------------- transforms ---------------------------------------
+
+def affine(img, rot_angle_deg=0, fx=0, fy=0, scale=1.0):
+    # add batch dim if necessary
+    if img.dim() == 3:
+        img = img.unsqueeze(0)
+    
+    B,C,H,W = img.shape
+    tx = W*fx/100
+    ty = H*fy/100
+    angle = torch.tensor([rot_angle_deg], dtype=img.dtype, device=img.device).repeat(B)
+    scale = torch.tensor([scale, scale], dtype=img.dtype, device=img.device).repeat(B,1)
+    center = torch.tensor([[img.shape[-1]/2, img.shape[-2]/2]], dtype=img.dtype, device=img.device).repeat(B,1)
+    translation = torch.tensor([[tx, ty]], dtype=img.dtype, device=img.device).repeat(B,1)
+    matrix = K.geometry.transform.get_affine_matrix2d(translation, center, scale, angle)
+    return K.geometry.transform.warp_affine(img, matrix[:,:2,:], dsize=(H, W))
+
+def adjust_color(img, brightness=0.0, contrast=0.0, saturation=1.0):
+    # brightness ∈ [-1, 1], contrast > 0
+    img = K.enhance.adjust_brightness(img, brightness)
+    img = K.enhance.adjust_contrast(img, contrast+1e-6)
+    img = K.enhance.adjust_saturation(img, saturation)
+    K.enhance.adjust_gamma()
+    return img
+
+def gaussian_blur(img, kernel_size=0.0, sigma=0.0):
+    # add batch dim if necessary
+    if img.dim() == 3:
+        img = img.unsqueeze(0)
+
+    blur = K.filters.GaussianBlur2d((kernel_size, kernel_size), (sigma, sigma))
+
+    return blur(img)
+
+def add_gaussian_noise(img, sigma=0.0):
+    noise = torch.randn_like(img)  # Generating on GPU is fastest with `torch.randn_like(...)`
+    if sigma != 1.0:  # `if` is cheaper than multiplication
+        noise *= sigma
+    return (img + noise).clamp(0,1)
+
+
+def transform_img(img, transform_name, magnitude):
+    # geometric
+    if transform_name == "Rotation":
+        return affine(img, rot_angle_deg=magnitude, fx=0, fy=0, scale=1.0)
+    if transform_name == "Translation":
+        return affine(img, rot_angle_deg=0, fx=magnitude, fy=magnitude, scale=1.0)
+    if transform_name == "Scale":
+        return affine(img, rot_angle_deg=0, fx=0, fy=0, scale=magnitude)
+
+    # intensity
+    if transform_name == "Brightness":
+        return K.enhance.adjust_brightness(img, magnitude)
+    if transform_name == "Contrast":
+        return K.enhance.adjust_contrast(img, magnitude)
+    if transform_name == "Saturation":
+        return K.enhance.adjust_saturation(img, magnitude)
+    if transform_name == "Gamma":
+        return K.enhance.adjust_gamma(img, magnitude)
+    if transform_name == "Hue":
+        return K.enhance.adjust_hue(img, magnitude)
+
+    # noise / blur
+    if transform_name == "Gaussian Noise":
+        return add_gaussian_noise(img, sigma=magnitude)
+    if transform_name == "Gaussian Blur":
+        return gaussian_blur(img, kernel_size=magnitude, sigma=magnitude)
+   
+    # add more as needed
+    return img
 
 # ------------- metrics ------------------------------------------
 
