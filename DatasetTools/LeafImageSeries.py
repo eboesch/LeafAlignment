@@ -177,7 +177,9 @@ class LeafDataset:
             self.seg_masks = self._load_images_from_dir(mask_dir)
 
         if 'target_images' in load:
-            target_dir = os.path.join(self.output_base, "result", "piecewise")
+            if verbose:
+                print("Loading target images...")
+            target_dir = os.path.join(self.output_reg, "result", "piecewise")
             self.target_images = self._load_images_from_dir(target_dir)
 
         if 'keypoints' in load:
