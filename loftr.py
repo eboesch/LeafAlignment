@@ -61,16 +61,28 @@ def loftr_match(img_fix, img_mov, verbose: bool=True, return_n_matches: bool=Fal
     mkpts0 = correspondences["keypoints0"]#.cpu().numpy()
     mkpts1 = correspondences["keypoints1"]#.cpu().numpy()
     confidence = correspondences["confidence"]
-    _, inliers = cv2.findFundamentalMat(mkpts0.cpu().numpy(), mkpts1.cpu().numpy(), cv2.USAC_MAGSAC, 0.5, 0.999, 100000)
-    inliers = inliers > 0
+    # _, inliers = cv2.findFundamentalMat(mkpts0.cpu().numpy(), mkpts1.cpu().numpy(), cv2.USAC_MAGSAC, 0.5, 0.999, 100000)
+    # inliers = inliers > 0
+
+    if mkpts0.shape[0] < 8 or mkpts1.shape[0] < 8:
+        print("Not enough points to perform inlier detection.")
+        n_inliers = None
+        inliers = None
+    else:
+        _, inliers = cv2.findFundamentalMat(mkpts0.cpu().numpy(), mkpts1.cpu().numpy(), cv2.USAC_MAGSAC, 0.5, 0.999, 100000)
+        if inliers is None:
+            n_inliers = None
+        else:
+            inliers = inliers > 0
+            n_inliers = inliers.sum()
 
     if verbose:
         print(f"Total matches: {len(mkpts0)}")
         print(f"Matches with Confidence > 0.5: {torch.sum(confidence > 0.5)}")
-        print(f"Inliers: {inliers.sum()} ({inliers.sum()/len(mkpts0):.2%})")
+        print(f"Inliers: {n_inliers} ({n_inliers/(len(mkpts0)+1e-13):.2%})")
 
     if return_n_matches:
-        n_matches = {'total_matches': len(mkpts0), 'conf_matches': torch.sum(confidence > 0.5), 'inliers': inliers.sum() }
+        n_matches = {'total_matches': len(mkpts0), 'conf_matches': torch.sum(confidence > 0.5), 'inliers': n_inliers }
         return mkpts0, mkpts1, confidence, inliers, n_matches
     else:
         return mkpts0, mkpts1, confidence, inliers
@@ -531,6 +543,17 @@ def erode_crop_leaf(available_data, index):
     masked_scaled_img = img_scaled * cropped_mask 
     return masked_scaled_img
 
+def fetch_leaves(indices: list, available_data, background_type: str='Original'):
+    if background_type == "Original":
+        img = [pil_to_kornia(available_data['images'][index]) for index in indices]
+    elif background_type == "Eroded":
+        img = [erode_leaf(available_data, index=index) for index in indices]
+    elif background_type == "Eroded+Cropped":
+        img = [erode_crop_leaf(available_data, index=index) for index in indices]
+    else:
+        raise ValueError(f"Unknown background type '{background_type}'")
+
+    return img
 
 # ------------- transforms ---------------------------------------
 
