@@ -157,7 +157,9 @@ class LeafDataset:
                     self.rois.append(None)
 
         if 'target_masks' in load:
-            target_mask_dir = os.path.join(self.output_base, "mask_aligned", "piecewise")
+            if verbose:
+                print("Loading Target Masks...")
+            target_mask_dir = os.path.join(self.output_reg, "mask_aligned", "piecewise")
             self.target_masks = self._load_images_from_dir(target_mask_dir)
 
         if 'instance_masks' in load:
@@ -165,6 +167,8 @@ class LeafDataset:
             self.instance_masks = self._load_images_from_dir(instance_mask_dir)
 
         if 'leaf_masks' in load:
+            if verbose:
+                print("Loading Leaf Masks...")
             mask_dir = os.path.join(self.output_ts, self.leaf_uid, "leaf_mask")
             self.leaf_masks = self._load_images_from_dir(mask_dir)
 
