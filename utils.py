@@ -12,6 +12,77 @@ from kornia_moons.viz import draw_LAF_matches
 import skimage as ski
 from skimage.metrics import structural_similarity as ssim
 from skimage.metrics import normalized_mutual_information as nmi
+from monai.metrics import compute_hausdorff_distance
+
+
+def crop_coords_zero_borders(mask: torch.Tensor):
+    """
+    mask: (B, C, H, W), values 0/1 (or nonzero = foreground)
+    returns: list of cropped tensors, one per batch element
+    """
+
+    if mask.dim() == 4:
+        mask.squeeze(0)
+        # Collapse channels
+        mask = torch.any(mask != 0, dim=0)
+        mask = mask.squeeze(0)
+    elif mask.dim() == 3:
+        # Collapse channels
+        mask = torch.any(mask != 0, dim=0)
+        mask = mask.squeeze(0)
+
+    # Rows / cols containing foreground
+    rows = torch.any(mask, dim=1) 
+    cols = torch.any(mask, dim=0) 
+
+    if rows.sum() == 0 or cols.sum() == 0:
+        print("Warning! Mask empty!")
+        rmin = rmax = cmin = cmax = 0
+        return rmin, rmax, cmin, cmax
+
+    r_idx = torch.where(rows)[0]
+    c_idx = torch.where(cols)[0]
+
+    rmin, rmax = r_idx[0], r_idx[-1]
+    cmin, cmax = c_idx[0], c_idx[-1]
+
+    return rmin, rmax, cmin, cmax
+
+
+def crop_coords_zero_borders_batch(mask: torch.Tensor):
+    """
+    mask: (B, C, H, W), values 0/1 (or nonzero = foreground)
+    returns: list of cropped tensors, one per batch element
+    """
+
+    B, C, H, W = mask.shape
+
+    # Collapse channels → foreground per pixel
+    fg = torch.any(mask != 0, dim=1)  # (B, H, W)
+
+    # Rows / cols containing foreground
+    rows = torch.any(fg, dim=2)  # (B, H)
+    cols = torch.any(fg, dim=1)  # (B, W)
+
+    crop_coords = []
+
+    for b in range(B):
+        if rows[b].sum() == 0 or cols[b].sum() == 0:
+            print("Warning! Mask empty!")
+            rmin = rmax = cmin = cmax = 0
+            crop_coords.append([rmin, rmax, cmin, cmax])
+            continue
+
+        r_idx = torch.where(rows[b])[0]
+        c_idx = torch.where(cols[b])[0]
+
+        rmin, rmax = r_idx[0], r_idx[-1]
+        cmin, cmax = c_idx[0], c_idx[-1]
+
+        crop_coords.append([rmin, rmax, cmin, cmax])
+
+    return crop_coords
+
 
 
 def crop_margins(img, top, bottom, left, right):
@@ -67,10 +138,15 @@ def pil_to_kornia(pil_img):
 
 
 def convert_image_to_tensor(img):
-    if type(img) == torch.Tensor:
+    if img is None:
+        return img
+    elif type(img) == torch.Tensor:
         return img
     elif type(img) == np.ndarray:
-        return K.image_to_tensor(img)
+        img = K.image_to_tensor(img)
+        if img.dim() == 3:
+            img = img.unsqueeze(0)
+        return img
     else:
         return pil_to_kornia(img)
 
@@ -84,6 +160,12 @@ def convert_img_tensor_to_numpy(img_tensor):
         .astype(np.float32) 
     )
     return img_np
+
+def weighted_average(tensor, weights):
+    weighted_sum = torch.sum(tensor*weights)
+    weight_sum = torch.sum(weights)
+    weighted_average = weighted_sum / weight_sum
+    return weighted_average
 
 def scale_image(img: torch.Tensor, scale: float, center: np.array=None):
     """
@@ -114,7 +196,31 @@ def scale_image(img: torch.Tensor, scale: float, center: np.array=None):
 
     return img_scaled
 
+
+def erode_leaf(img, mask, scale=1.3):
+    masked_img = img * mask
+    scaled_img = scale_image(masked_img, scale)
+    scaled_masked_img = scaled_img * mask
+    return scaled_masked_img
+
 # ------------- metrics ------------------------------------------
+
+def iou(img1, mask1, img2, mask2):
+    mask1 = convert_image_to_tensor(mask1).long()
+    mask2 = convert_image_to_tensor(mask2).long()
+    return K.metrics.mean_iou(mask2, mask1, 2, eps=1e-6)[0,1]
+
+def hausdorff(img1, img1_mask, img2, img2_mask, percentile=95):
+    img1_mask = convert_image_to_tensor(img1_mask).long()
+    img2_mask = convert_image_to_tensor(img2_mask).long()
+
+    return compute_hausdorff_distance(
+        y_pred=img2_mask,
+        y=img1_mask,
+        distance_metric="euclidean",
+        percentile=95,
+        include_background=False,
+    )
 
 def mse(img1, img2, reduction='mean'):
     img1 = convert_image_to_tensor(img1)
@@ -122,6 +228,29 @@ def mse(img1, img2, reduction='mean'):
 
     mse_loss = torch.nn.MSELoss(reduction=reduction)
     return mse_loss(img1, img2)
+
+def mse_masked(img1, img1_mask, img2, img2_mask, reduction="mean", mask_mode='both'):
+    img1 = convert_image_to_tensor(img1)
+    img2 = convert_image_to_tensor(img2)
+    img1_mask = convert_image_to_tensor(img1_mask)
+    img2_mask = convert_image_to_tensor(img2_mask)
+
+
+    if mask_mode == 'either':
+        # consider all pixels where at least one image is valid
+        mask = torch.logical_or(img1_mask, img2_mask)
+    elif mask_mode == 'both':
+        # consider all pixels where both images are valid
+        mask = torch.logical_and(img1_mask, img2_mask)
+    else:
+        raise ValueError(f"Unknown mask_mode {mask_mode}. Expected 'either' or 'both'.")
+
+    if mask.shape[1] == 1:
+        mask = K.color.grayscale_to_rgb(mask)
+        
+    # squared_diff = (img1)
+    # mse_loss = torch.nn.MSELoss(reduction=reduction)
+    return torch.nn.functional.mse_loss(img1, img2, reduction=reduction, weight=mask)
 
 def ncc(img1, img2, reduction='mean'):
     """
@@ -159,6 +288,50 @@ def ncc(img1, img2, reduction='mean'):
 
     else:
         raise ValueError("reduction must be either 'mean' or 'none'")
+        
+
+def ncc_masked(img1, img1_mask, img2, img2_mask, reduction="mean",  mask_mode='both'):
+    img1 = convert_image_to_tensor(img1)
+    img2 = convert_image_to_tensor(img2)
+    img1_mask = convert_image_to_tensor(img1_mask)
+    img2_mask = convert_image_to_tensor(img2_mask)
+
+    # Convert to grayscale
+    img1 = K.color.rgb_to_grayscale(img1)
+    img2 = K.color.rgb_to_grayscale(img2)
+
+    if mask_mode == 'either':
+        # consider all pixels where at least one image is valid
+        mask = torch.logical_or(img1_mask, img2_mask)
+    elif mask_mode == 'both':
+        # consider all pixels where both images are valid
+        mask = torch.logical_and(img1_mask, img2_mask)
+    else:
+        raise ValueError(f"Unknown mask_mode {mask_mode}. Expected 'either' or 'both'.")
+
+    if torch.sum(mask) == 0:
+        raise ValueError(f"Combined mask is empty.")
+
+    img1_mean = weighted_average(img1, mask)
+    img2_mean = weighted_average(img2, mask)
+    img1_centered = img1 - img1_mean
+    img2_centered = img2 - img2_mean
+    std1 = torch.sqrt(weighted_average(torch.pow(img1_centered, 2), mask))
+    std2 = torch.sqrt(weighted_average(torch.pow(img2_centered, 2), mask))
+
+    if reduction == 'mean':
+        # Full-image NCC        
+        return torch.sum(img1_centered * img2_centered * mask) / (std1 * std2 * torch.sum(mask) + 1e-13)
+
+    elif reduction == 'none':
+        # Per-pixel NCC map
+        img1_norm = img1_centered / (std1 + 1e-13)
+        img2_norm = img2_centered / (std2 + 1e-13)
+        return img1_norm * img2_norm * mask
+
+    else:
+        raise ValueError("reduction must be either 'mean' or 'none'")
+
 
 def local_ncc(img1, img2, window_size=9, reduction='mean'):
     """
@@ -218,6 +391,232 @@ def local_ncc(img1, img2, window_size=9, reduction='mean'):
         return lcc_map.squeeze(0).squeeze(0)  # remove batch/channel dims
     else:
         raise ValueError("reduction must be 'mean' or 'none'")
+
+
+def local_ncc_masked(img1, img1_mask, img2, img2_mask, window_size=9, mask_mode='both', reduction='mean'):
+    img1 = convert_image_to_tensor(img1)
+    img2 = convert_image_to_tensor(img2)
+    img1_mask = convert_image_to_tensor(img1_mask)
+    img2_mask = convert_image_to_tensor(img2_mask)
+
+    # Convert to grayscale
+    img1 = K.color.rgb_to_grayscale(img1)
+    img2 = K.color.rgb_to_grayscale(img2)
+
+    # construct mask
+    if mask_mode == 'either':
+        # consider all pixels where at least one image is valid
+        mask = torch.logical_or(img1_mask, img2_mask)
+    elif mask_mode == 'both':
+        # consider all pixels where both images are valid
+        mask = torch.logical_and(img1_mask, img2_mask)
+    else:
+        raise ValueError(f"Unknown mask_mode {mask_mode}. Expected 'either' or 'both'.")
+
+    if torch.sum(mask) == 0:
+        raise ValueError(f"Combined mask is empty.")
+
+    # cast mask to float
+    mask = mask.to(dtype=img1.dtype)
+
+    kernel = torch.ones(1,1,window_size, window_size, device=img1.device)
+    padding = window_size//2
+
+    # local sums
+    img1_masked = mask * img1
+    img2_masked = mask * img2
+
+    sum_mask  = F.conv2d(mask,  kernel, padding=padding)
+    sum1  = F.conv2d(img1_masked, kernel, padding=padding)
+    sum2  = F.conv2d(img2_masked, kernel, padding=padding)
+    
+    # local means
+    mean1 = sum1 / (sum_mask + 1e-13)
+    mean2 = sum2 / (sum_mask + 1e-13)
+
+    # center
+    img1_centered = img1 - mean1
+    img2_centered = img2 - mean2
+
+    # weighted second moments
+    var1 = F.conv2d(mask * img1_centered * img1_centered, kernel, padding=padding)
+    var2 = F.conv2d(mask * img2_centered * img2_centered, kernel, padding=padding)
+    cov = F.conv2d(mask * img1_centered * img2_centered, kernel, padding=padding)
+
+    # local stds
+    std1 = torch.sqrt(var1)
+    std2 = torch.sqrt(var2)
+
+    lncc_map = cov / (std1 * std2 + 1e-13)
+
+    # only count pixels where there is enough valid support
+    valid = (sum_mask > 0)
+
+    if reduction == 'mean':
+        return lncc_map[valid].mean()
+    elif reduction == 'none':
+        return lncc_map.squeeze(0).squeeze(0)  # remove batch/channel dims
+    else:
+        raise ValueError("reduction must be 'mean' or 'none'")
+
+
+def nmi_skimage(img1, img2, bins=100):
+    img1 = convert_img_tensor_to_numpy(convert_image_to_tensor(img1))
+    img2 = convert_img_tensor_to_numpy(convert_image_to_tensor(img2))
+
+    return ski.metrics.normalized_mutual_information(img1, img2, bins=bins)
+
+
+def nmi(img1, img2, reduction="mean", bins=32, sigma_ratio=1.0, sigma=None, eps=1e-13):
+    """
+    Parzen-window Normalized Mutual Information (NMI)
+
+    A, B : tensors of same shape, intensities in [0,1]
+    W    : same shape, 1 = valid pixel, 0 = invalid
+    bins : number of Parzen bins
+    sigma: Gaussian kernel width
+
+    Returns: scalar NMI
+    """
+
+    img1 = convert_image_to_tensor(img1)
+    img2 = convert_image_to_tensor(img2)
+
+    # Convert to grayscale
+    img1 = K.color.rgb_to_grayscale(img1)
+    img2 = K.color.rgb_to_grayscale(img2)
+
+    # flatten
+    img1 = img1.reshape(-1)
+    img2 = img2.reshape(-1)
+
+    device = img1.device
+
+    # bin centers
+    # shape: (1, bins)
+    bin_centers = torch.linspace(0.0, 1.0, bins, device=device).unsqueeze(0)
+    bin_width = torch.mean(torch.diff(bin_centers))
+    if sigma is None:
+        sigma = bin_width * sigma_ratio
+
+    # Parzen soft assignment
+    # shape: (N, bins)
+    img1 = img1.unsqueeze(1)
+    img2 = img2.unsqueeze(1)
+
+    hist1 = torch.exp(-(img1 - bin_centers)**2 / (2 * sigma**2))
+    hist2 = torch.exp(-(img2 - bin_centers)**2 / (2 * sigma**2))
+    # normalize kernels
+    hist1 = hist1 / (hist1.sum(dim=1, keepdim=True) + eps)
+    hist2 = hist2 / (hist2.sum(dim=1, keepdim=True) + eps)
+    # print(f"P1 alt: {torch.mean(hist1, dim=0)}")
+
+    # joint Parzen histogram
+    # shape: (bins, bins)
+    P12 = hist1.T @ hist2
+    
+    # normalize to probabilities
+    P12 = P12 / (P12.sum() + eps)
+
+    # marginals
+    P1 = torch.mean(hist1, dim=0)
+    P2 = torch.mean(hist2, dim=0)    
+
+    # entropies
+    H1  = -(P1  * torch.log(P1  + eps)).sum()
+    H2  = -(P2  * torch.log(P2  + eps)).sum()
+    H12 = -(P12 * torch.log(P12 + eps)).sum()
+
+    # normalized mutual information
+    NMI = (H1 + H2) / H12
+
+    return NMI
+
+
+def nmi_masked(img1, img1_mask, img2, img2_mask, reduction="mean", mask_mode='both', bins=32, sigma_ratio=1.0, sigma=None, eps=1e-7):
+    """
+    Parzen-window Normalized Mutual Information (NMI)
+
+    A, B : tensors of same shape, intensities in [0,1]
+    W    : same shape, 1 = valid pixel, 0 = invalid
+    bins : number of Parzen bins
+    sigma: Gaussian kernel width
+
+    Returns: scalar NMI
+    """
+
+    img1 = convert_image_to_tensor(img1)
+    img2 = convert_image_to_tensor(img2)
+    img1_mask = convert_image_to_tensor(img1_mask)
+    img2_mask = convert_image_to_tensor(img2_mask)
+
+    # Convert to grayscale
+    img1 = K.color.rgb_to_grayscale(img1)
+    img2 = K.color.rgb_to_grayscale(img2)
+
+    if mask_mode == 'either':
+        # consider all pixels where at least one image is valid
+        mask = torch.logical_or(img1_mask, img2_mask)
+    elif mask_mode == 'both':
+        # consider all pixels where both images are valid
+        mask = torch.logical_and(img1_mask, img2_mask)
+    else:
+        raise ValueError(f"Unknown mask_mode {mask_mode}. Expected 'either' or 'both'.")
+
+    if torch.sum(mask) == 0:
+        raise ValueError(f"Combined mask is empty.")
+
+    # flatten
+    img1 = img1.reshape(-1)
+    img2 = img2.reshape(-1)
+    mask = mask.reshape(-1)
+
+    device = img1.device
+
+    # bin centers
+    # shape: (1, bins)
+    bin_centers = torch.linspace(0.0, 1.0, bins, device=device).unsqueeze(0)
+    bin_width = torch.mean(torch.diff(bin_centers))
+    if sigma is None:
+        sigma = bin_width * sigma_ratio
+
+    # Parzen soft assignment
+    # shape: (N, bins)
+    img1 = img1.unsqueeze(1)
+    img2 = img2.unsqueeze(1)
+    mask = mask.unsqueeze(1)
+
+    hist1 = torch.exp(-(img1 - bin_centers)**2 / (2 * sigma**2))
+    hist2 = torch.exp(-(img2 - bin_centers)**2 / (2 * sigma**2))
+
+    # normalize kernels
+    hist1 = hist1 / (hist1.sum(dim=1, keepdim=True) + eps)
+    hist2 = hist2 / (hist2.sum(dim=1, keepdim=True) + eps)
+
+    # apply mask 
+    hist1 = hist1 * mask
+    hist2 = hist2 * mask
+
+    # joint Parzen histogram
+    # shape: (bins, bins)
+    P12 = hist1.T @ hist2
+
+    # normalize to probabilities
+    P12 = P12 / (P12.sum() + eps)
+
+    # marginals
+    P1 = torch.sum(hist1, dim=0) / torch.sum(mask) 
+    P2 = torch.sum(hist2, dim=0) / torch.sum(mask)    
+
+    # entropies
+    H1  = -(P1  * torch.log(P1  + eps)).sum()
+    H2  = -(P2  * torch.log(P2  + eps)).sum()
+    H12 = -(P12 * torch.log(P12 + eps)).sum()
+
+    # normalized mutual information
+    NMI = (H1 + H2) / H12
+
+    return NMI
 
 
 def histogram2d_scatter(img1, img2, bins=64, eps=1e-8):
