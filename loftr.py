@@ -9,6 +9,7 @@ import numpy as np
 import torch
 from kornia_moons.viz import draw_LAF_matches
 import skimage as ski
+from utils import pil_to_kornia, crop_img, scale_image
 
 def load_resize_image(img_path: str, H: int=375, W: int=600):
     """
@@ -272,10 +273,11 @@ def tps_skimage(keypts_fix, keypts_mov, confidence, thrsld, img_mov, verbose=Fal
     if verbose:
         print(f"Threshold set to {thrsld}")
 
-    tps = ski.transform.ThinPlateSplineTransform()
+    # tps = ski.transform.ThinPlateSplineTransform()
     if verbose:
         print("Estimating TPS transform...")
-    tps.estimate(img_fix_mks, img_mov_mks) # estimate transform from img_fix -> img_mov
+    # tps.estimate(img_fix_mks, img_mov_mks) # estimate transform from img_fix -> img_mov
+    tps = ski.transform.ThinPlateSplineTransform.from_estimate(img_fix_mks, img_mov_mks)
     if verbose:
         print("Transforming moving image...")
     warped = ski.transform.warp(img_mov_reordered, tps) # warp uses inverse transform, i.e. img_mov -> img_fix
@@ -364,15 +366,21 @@ def keypoints_roi_to_image(kp_roi: np.ndarray, roi: dict):
     roi: dict with rotation_matrix (2x3) and bounding_box
     Returns: kp_full (N,2) in original image coordinates
     """
+    if kp_roi is None:
+        return None
     kp_crop = kp_roi.astype(np.float64)
 
     # 1) shift by top-left of bounding box to get coordinates in rotated image
-    box = np.asarray(roi["bounding_box"], dtype=np.float64)
+    box = roi["bounding_box"]
+    R = roi["rotation_matrix"]
+    if (box is None) or (R is None):
+        return None
+    box = np.asarray(box, dtype=np.float64)
     bbox_min = box.min(axis=0)  # [x_min, y_min]
     kp_rot_img = kp_crop + bbox_min  # coordinates in rotated image
 
     # 2) invert rotation to map back to original image
-    R = np.asarray(roi["rotation_matrix"], dtype=np.float64)
+    R = np.asarray(R, dtype=np.float64)
     rot = R[:, :2]
     trans = R[:, 2:]
     rot_inv = np.linalg.inv(rot)
@@ -411,34 +419,7 @@ def mask_leaf(img: torch.Tensor, keypts: np.ndarray, erode_px: int = 0, return_c
     else:
         return masked_img, mask_t
 
-def scale_image(img: torch.Tensor, scale: float, center: np.array=None):
-    """
-    img: (C,H,W) or (B,C,H,W) torch tensor
-    scale: float >1 to enlarge
-    """
-    # Add batch dimension if necessary
-    if img.dim() == 3:
-        img = img.unsqueeze(0)  # (1,C,H,W)
 
-    B,C,H,W = img.shape
-    device = img.device
-    dtype = img.dtype
-
-    # Scale tensor: (B,2) float32 on same device
-    scale_tensor = torch.tensor([[scale, scale]], dtype=dtype, device=device).repeat(B,1)
-
-    if center is not None:
-        # can choose custom center through which to scale, default is the center of the tensor
-        center = torch.tensor(center, dtype=dtype, device=device).repeat(B,1)
-        img_scaled = K.geometry.transform.scale(img, scale_factor=scale_tensor, center=center)
-    else:
-        img_scaled = K.geometry.transform.scale(img, scale_factor=scale_tensor)
-
-    # Remove batch dim if needed
-    if img_scaled.shape[0] == 1:
-        img_scaled = img_scaled.squeeze(0)
-
-    return img_scaled
 
 
 def erode_mask_by_scaling(mask: torch.Tensor, scale: float):
@@ -475,32 +456,48 @@ def erode_mask_by_scaling(mask: torch.Tensor, scale: float):
     return mask_eroded
 
 
-def erode_leaf(available_data, index):
+def erode_leaf_keypoints(leaf, index, return_mask=False):
+    """
+    erode leaf background based on keypoints
+    """
     # img = available_data['images'][index]
-    kpts_img = keypoints_roi_to_image(available_data['keypoints'][index], available_data['rois'][index])
-    masked_img, mask_t, center = mask_leaf(available_data['images'][index], kpts_img, erode_px=0, return_center=True, return_bounds=False)
+    kpts_img = keypoints_roi_to_image(leaf.keypoints[index], leaf.rois[index])
+    masked_img, mask_t, center = mask_leaf(leaf.images[index], kpts_img, erode_px=0, return_center=True, return_bounds=False)
     img_scaled = scale_image(masked_img, 1.2, center)
     masked_scaled_img = img_scaled * mask_t 
-    return masked_scaled_img
+    if return_mask:
+        return masked_scaled_img, mask_t
+    else:
+        return masked_scaled_img,
 
-def erode_crop_leaf(available_data, index):
-    kpts_img = keypoints_roi_to_image(available_data['keypoints'][index], available_data['rois'][index])
-    masked_img, mask_t, center, bounds = mask_leaf(available_data['images'][index], kpts_img, erode_px=0, return_center=True, return_bounds=True)
+
+def erode_crop_leaf(leaf, index, scale=1.2, return_mask=False):
+    kpts_img = keypoints_roi_to_image(leaf.keypoints[index], leaf.rois[index])
+    if kpts_img is None:
+        if return_mask:
+            return None, None  
+        else: 
+            return None
+
+    masked_img, mask_t, center, bounds = mask_leaf(leaf.images[index], kpts_img, erode_px=0, return_center=True, return_bounds=True)
     x_min, y_min = bounds[0]
     x_max, y_max = bounds[1]
     cropped_img, new_center = crop_img(masked_img, x_min, x_max, y_min, y_max, center)
     cropped_mask = crop_img(mask_t, x_min, x_max, y_min, y_max)
-    img_scaled = scale_image(cropped_img, 1.2, new_center)
+    img_scaled = scale_image(cropped_img, scale, new_center)
     masked_scaled_img = img_scaled * cropped_mask 
-    return masked_scaled_img
+    if return_mask:
+        return masked_scaled_img, cropped_mask
+    else:
+        return masked_scaled_img
 
-def fetch_leaves(indices: list, available_data, background_type: str='Original'):
+def fetch_leaves(indices: list, leaf, background_type: str='Original'):
     if background_type == "Original":
-        img = [pil_to_kornia(available_data['images'][index]) for index in indices]
+        img = [pil_to_kornia(leaf.images[index]) for index in indices]
     elif background_type == "Eroded":
-        img = [erode_leaf(available_data, index=index) for index in indices]
+        img = [erode_leaf(leaf, index=index) for index in indices]
     elif background_type == "Eroded+Cropped":
-        img = [erode_crop_leaf(available_data, index=index) for index in indices]
+        img = [erode_crop_leaf(leaf, index=index) for index in indices]
     else:
         raise ValueError(f"Unknown background type '{background_type}'")
 
