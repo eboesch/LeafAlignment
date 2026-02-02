@@ -123,6 +123,14 @@ class LeafDataset:
                 print("Loading images...")
             # self.images = [K.io.load_image(img_path, K.io.ImageLoadType.RGB32)[None, ...] for img_path in self.series]
             self.images = [Image.open(p) for p in self.series]
+        
+        if 'cropped_images' in load:
+            if verbose:
+                print("Loading cropped images...")
+            crop_dir = os.path.join(self.output_reg, "crop")
+            self.cropped_images = self._load_images_from_dir(crop_dir)
+            # self.images = [K.io.load_image(img_path, K.io.ImageLoadType.RGB32)[None, ...] for img_path in self.series]
+            # self.images = [Image.open(p) for p in self.series]
 
         if 'tforms' in load:
             if verbose:
@@ -177,7 +185,9 @@ class LeafDataset:
             self.det_masks = self._load_images_from_dir(mask_dir)
 
         if 'seg_masks' in load:
-            mask_dir = os.path.join(self.output_base, "predictions", "symptoms_seg", "pred")
+            if verbose:
+                print("Loading Segmentation Masks...")
+            mask_dir = os.path.join(self.output_reg, "predictions", "symptoms_seg", "pred")
             self.seg_masks = self._load_images_from_dir(mask_dir)
 
         if 'target_images' in load:
