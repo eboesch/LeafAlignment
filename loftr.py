@@ -9,7 +9,7 @@ import numpy as np
 import torch
 from kornia_moons.viz import draw_LAF_matches
 import skimage as ski
-from utils import pil_to_kornia, crop_img, scale_image
+from utils import crop_img, scale_image, convert_image_to_tensor
 
 def load_resize_image(img_path: str, H: int=375, W: int=600):
     """
@@ -203,7 +203,7 @@ def plot_matches_conf(img_fix, keypts_fix, img_mov, keypts_mov, confidence, N_sh
     # Add colorbar
     sm = plt.cm.ScalarMappable(cmap='viridis', norm=plt.Normalize(vmin=conf_show.min(), vmax=conf_show.max()))
     sm.set_array([])
-    cbar = plt.colorbar(sm, ax=ax)
+    cbar = plt.colorbar(sm, ax=ax, orientation='horizontal')
     cbar.set_label('LoFTR Confidence')
 
     # plt.show()
@@ -320,11 +320,11 @@ def plot_overlay(img_fix, img_mov):
     """
     # kornia and torch expect C x H x W, while skimage & matplotlib expect H x W x C
     if type(img_fix) == torch.Tensor:
-    #     img_fix = change_dimension_order(img_fix)
-        img_fix = K.color.rgb_to_grayscale(img_fix)
+        if img_fix.shape[1] == 3:
+            # convert rgb image to grayscale
+            img_fix = K.color.rgb_to_grayscale(img_fix)
         img_fix = K.tensor_to_image(img_fix)
     if type(img_mov) == torch.Tensor:
-    #     img_mov = change_dimension_order(img_mov)
         img_mov = K.tensor_to_image(img_mov)
 
     fig = plt.figure(figsize=(12,6))
@@ -336,21 +336,26 @@ def plot_overlay(img_fix, img_mov):
 
     return fig
 
-def plot_image_pair(img1, img2, img1_ind: int=None, img2_ind: int = 2, title: str=None):
+def plot_image_pair(img1, img2, img1_ind: int=None, img2_ind: int = 2, title: str=None, title_offset: float=0.86):
+    if type(img1) == torch.Tensor:
+        img1 = K.tensor_to_image(img1)
+    if type(img2) == torch.Tensor:
+        img2 = K.tensor_to_image(img2)
+
     if img1_ind is None:
         img1_ind = 1
     if img2_ind is None:
         img2_ind = 2
 
     fig, axs = plt.subplots(1, 2, figsize=(12,6))
-    axs[0].imshow(K.tensor_to_image(img1))
+    axs[0].imshow(img1)
     axs[0].set_title(f"Image {img1_ind}")
     # axs[0].axes('off')
 
-    axs[1].imshow(K.tensor_to_image(img2))
+    axs[1].imshow(img2)
     axs[1].set_title(f"Image {img2_ind}")
     if title is not None:
-        fig.suptitle(title, fontsize=22, y=0.86)
+        fig.suptitle(title, fontsize=22, y=title_offset)
     plt.tight_layout()
     
     return fig, axs
@@ -389,7 +394,7 @@ def keypoints_roi_to_image(kp_roi: np.ndarray, roi: dict):
     return kp_full
 
 def mask_leaf(img: torch.Tensor, keypts: np.ndarray, erode_px: int = 0, return_center: bool=True, return_bounds: bool=False):
-    img = pil_to_kornia(img)
+    img = convert_image_to_tensor(img)
 
     B,C,H,W = img.shape
     # Computes the convex hull of the keypoints.
@@ -403,12 +408,13 @@ def mask_leaf(img: torch.Tensor, keypts: np.ndarray, erode_px: int = 0, return_c
     mask = np.zeros((H,W), dtype=np.uint8)
     cv2.fillConvexPoly(mask, hull.reshape(-1,2), 1) # fill in convex hull with value 1
     mask_t = torch.from_numpy(mask).float().to(img.device).unsqueeze(0) # convert mask to tensor and add channel dim
+    
     if erode_px > 0:
-        # FIXME
-        print("erosion not yet functional")
-        # kernel = torch.ones((erode_px,erode_px), dtype=torch.float32, device=mask_t.device)
-        # unsqueeze mask to add batch dim
-        # mask_t = morph.erosion(mask_t.unsqueeze(0), kernel, engine='convolution').squeeze(0) 
+        kernel = torch.ones((5,5), dtype=torch.float32, device=mask_t.device)
+        for _ in range(int(erode_px/5)):
+            # unsqueeze mask to add batch dim
+            mask_t = K.morphology.erosion(mask_t.unsqueeze(0), kernel, border_type='constant').squeeze(0) 
+    
     masked_img = img * mask_t
     if return_center and return_bounds:
         return masked_img, mask_t, center[0], [mins[0], maxs[0]]
@@ -456,14 +462,14 @@ def erode_mask_by_scaling(mask: torch.Tensor, scale: float):
     return mask_eroded
 
 
-def erode_leaf_keypoints(leaf, index, return_mask=False):
+def erode_leaf_keypoints(leaf, index, scale=1.2, return_mask=False):
     """
     erode leaf background based on keypoints
     """
     # img = available_data['images'][index]
     kpts_img = keypoints_roi_to_image(leaf.keypoints[index], leaf.rois[index])
     masked_img, mask_t, center = mask_leaf(leaf.images[index], kpts_img, erode_px=0, return_center=True, return_bounds=False)
-    img_scaled = scale_image(masked_img, 1.2, center)
+    img_scaled = scale_image(masked_img, scale, center)
     masked_scaled_img = img_scaled * mask_t 
     if return_mask:
         return masked_scaled_img, mask_t
@@ -491,9 +497,37 @@ def erode_crop_leaf(leaf, index, scale=1.2, return_mask=False):
     else:
         return masked_scaled_img
 
+def crop_ROI_erode_leaf(leaf, ind, scale=1.2, erode_px=60, return_mask=True):
+    img = convert_image_to_tensor(leaf.images[ind])
+    H, W = img_og.shape[2], img_og.shape[3]
+    roi = leaf.rois[ind]
+    rot_mat = roi["rotation_matrix"]
+    bbox = roi["bounding_box"]
+    keypoints = leaf.keypoints[ind]
+    if rot_mat is None or bbox is None or keypoints is None:
+        print(f"Error: missing data for leaf {leaf.leaf_uid}")
+        return None, None
+    rot_mat = np.asarray(rot_mat)
+    bbox = np.asarray(bbox)
+
+    # rotate and crop to ROI
+    img = K.geometry.transform.warp_affine(img_og, torch.Tensor(rot_mat).unsqueeze(0), (H, W)) #, align_corners=True)
+    img = crop_img(img, bbox[:,0].min(), bbox[:,0].max()-1, bbox[:,1].min(), bbox[:,1].max()-1)
+
+    # generate mask via keypoints
+    masked_img, mask_t, center = mask_leaf(img, keypoints, erode_px=erode_px, return_center=True, return_bounds=False)
+
+    if erode_px == 0:    
+        img_scaled = scale_image(masked_img, scale, center)
+        masked_img = img_scaled * mask_t 
+    if return_mask:
+        return masked_img, mask_t
+    else:
+        return masked_img
+
 def fetch_leaves(indices: list, leaf, background_type: str='Original'):
     if background_type == "Original":
-        img = [pil_to_kornia(leaf.images[index]) for index in indices]
+        img = [convert_image_to_tensor(leaf.images[index]) for index in indices]
     elif background_type == "Eroded":
         img = [erode_leaf(leaf, index=index) for index in indices]
     elif background_type == "Eroded+Cropped":

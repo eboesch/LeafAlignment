@@ -197,11 +197,23 @@ def scale_image(img: torch.Tensor, scale: float, center: np.array=None):
     return img_scaled
 
 
-def erode_leaf(img, mask, scale=1.3):
+def erode_leaf(img, mask, scale=1.2, erode_px=60, return_mask=True):
     masked_img = img * mask
-    scaled_img = scale_image(masked_img, scale)
-    scaled_masked_img = scaled_img * mask
-    return scaled_masked_img
+
+    if erode_px > 0:
+        kernel = torch.ones((5,5), dtype=torch.float32, device=mask_t.device)
+        for _ in range(int(erode_px/5)):
+            # unsqueeze mask to add batch dim
+            mask = K.morphology.erosion(mask, kernel, border_type='constant')
+        out_img = masked_img * mask
+    else:
+        scaled_img = scale_image(masked_img, scale)
+        out_img = scaled_img * mask
+
+    if return_mask:
+        return out_img, mask
+    else:
+        return out_img
 
 # ------------- metrics ------------------------------------------
 
@@ -722,3 +734,17 @@ def ssim_skimage(img1, img2, window_size=11, return_img=False):
     K1, K2 = 0.01, 0.03
 
     return ssim(img1, img2, channel_axis=-1, data_range=data_range, win_size=window_size, gaussian_weights=True, sigma=sigma, K1=K1, K2=K2, full=return_img)
+
+
+def ssim_masked(img1, img1_mask, img2, img2_mask, window_size=11, reduction='mean'):
+    img1 = convert_image_to_tensor(img1)
+    img2 = convert_image_to_tensor(img2)
+
+
+    ssim_map = K.metrics.ssim(img1, img2, window_size, eps=1e-12, padding='same', max_val=1.0)
+    if reduction == 'mean':
+        return ssim_map.mean(dim=(1, 2, 3))
+    elif reduction == 'none':
+        return ssim_map
+    else:
+        raise ValueError("reduction must be either 'mean' or 'none'")
