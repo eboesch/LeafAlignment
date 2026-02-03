@@ -201,7 +201,7 @@ def erode_leaf(img, mask, scale=1.2, erode_px=60, return_mask=True):
     masked_img = img * mask
 
     if erode_px > 0:
-        kernel = torch.ones((5,5), dtype=torch.float32, device=mask_t.device)
+        kernel = torch.ones((5,5), dtype=torch.float32, device=mask.device)
         for _ in range(int(erode_px/5)):
             # unsqueeze mask to add batch dim
             mask = K.morphology.erosion(mask, kernel, border_type='constant')

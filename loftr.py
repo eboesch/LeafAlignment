@@ -499,7 +499,7 @@ def erode_crop_leaf(leaf, index, scale=1.2, return_mask=False):
 
 def crop_ROI_erode_leaf(leaf, ind, scale=1.2, erode_px=60, return_mask=True):
     img = convert_image_to_tensor(leaf.images[ind])
-    H, W = img_og.shape[2], img_og.shape[3]
+    H, W = img.shape[2], img.shape[3]
     roi = leaf.rois[ind]
     rot_mat = roi["rotation_matrix"]
     bbox = roi["bounding_box"]
@@ -511,7 +511,7 @@ def crop_ROI_erode_leaf(leaf, ind, scale=1.2, erode_px=60, return_mask=True):
     bbox = np.asarray(bbox)
 
     # rotate and crop to ROI
-    img = K.geometry.transform.warp_affine(img_og, torch.Tensor(rot_mat).unsqueeze(0), (H, W)) #, align_corners=True)
+    img = K.geometry.transform.warp_affine(img, torch.Tensor(rot_mat).unsqueeze(0), (H, W)) #, align_corners=True)
     img = crop_img(img, bbox[:,0].min(), bbox[:,0].max()-1, bbox[:,1].min(), bbox[:,1].max()-1)
 
     # generate mask via keypoints
