@@ -262,7 +262,7 @@ def fetch_image_mask_pair(leaf: LeafDataset, fixed_img_ind: int, moving_img_ind:
 
     """
     
-    if method == "Pairwise Affine":
+    if method == "Piecewise Affine":
         img_fixed = convert_image_to_tensor(leaf.target_images[fixed_img_ind])
         mask_fixed = convert_image_to_tensor(leaf.target_masks[fixed_img_ind])
         if (img_fixed is None) or (mask_fixed is None): 
