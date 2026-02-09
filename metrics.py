@@ -1,10 +1,4 @@
-# import os
-# import cv2
 import kornia as K
-# import kornia.feature as KF
-# import kornia.geometry.transform as KT
-# import matplotlib.pyplot as plt
-# import matplotlib.cm as cm
 # import numpy as np
 import torch
 import torch.nn.functional as F
@@ -12,7 +6,7 @@ import torch.nn.functional as F
 from skimage.metrics import structural_similarity
 from skimage.metrics import normalized_mutual_information
 from monai.metrics import compute_hausdorff_distance
-from utils import weighted_average
+from utils import convert_image_to_tensor, convert_img_tensor_to_numpy, weighted_average
 
 def iou(img1, mask1, img2, mask2):
     mask1 = convert_image_to_tensor(mask1).long()
@@ -165,9 +159,11 @@ def local_ncc(img1, img2, window_size=9, reduction='mean'):
     # Ensure batch and channel dims for conv2d
     if img1.dim() == 2:
         img1 = img1.unsqueeze(0).unsqueeze(0)
-        img2 = img2.unsqueeze(0).unsqueeze(0)
     elif img1.dim() == 3:
         img1 = img1.unsqueeze(0)
+    if img2.dim() == 2:
+        img2 = img2.unsqueeze(0).unsqueeze(0)
+    elif img2.dim() == 3:
         img2 = img2.unsqueeze(0)
 
     padding = window_size // 2
@@ -508,10 +504,19 @@ def ssim_kornia(img1, img2, window_size=11, reduction='mean'):
     img1 = convert_image_to_tensor(img1)
     img2 = convert_image_to_tensor(img2)
 
+    if img1.dim() == 2:
+        img1 = img1.unsqueeze(0).unsqueeze(0)
+    elif img1.dim() == 3:
+        img1 = img1.unsqueeze(0)
+    if img2.dim() == 2:
+        img2 = img2.unsqueeze(0).unsqueeze(0)
+    elif img2.dim() == 3:
+        img2 = img2.unsqueeze(0)
+
 
     ssim_map = K.metrics.ssim(img1, img2, window_size, eps=1e-12, padding='same', max_val=1.0)
     if reduction == 'mean':
-        return ssim_map.mean(dim=(1, 2, 3)).item()
+        return ssim_map.mean(dim=(1, 2, 3))
     elif reduction == 'none':
         return ssim_map
     else:

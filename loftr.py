@@ -2,12 +2,8 @@ import os
 import cv2
 import kornia as K
 import kornia.feature as KF
-# import kornia.geometry.transform as KT
-# import matplotlib.pyplot as plt
-# import matplotlib.cm as cm
 import numpy as np
 import torch
-# from kornia_moons.viz import draw_LAF_matches
 import skimage as ski
 from utils import convert_image_to_tensor
 

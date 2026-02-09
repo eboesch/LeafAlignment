@@ -1,16 +1,12 @@
-# import os
-# import cv2
 import kornia as K
 import kornia.feature as KF
 from kornia_moons.viz import draw_LAF_matches
-# import kornia.geometry.transform as KT
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import numpy as np
 import torch
 
-# import skimage as ski
-from utils import convert_image_to_tensor #,crop_img, scale_image,
+from utils import convert_image_to_tensor 
 
 
 def plot_matches(img_fix, keypts_fix, img_mov, keypts_mov, inliers, N_show: int=100, inliers_only: bool=True, vertical: bool=True):
@@ -204,7 +200,7 @@ def plot_img_transform(img_mov, img_mov_warped, plot_keypts: bool=False, keypts_
     return fig, axs
 
 
-def plot_overlay(img_fix, img_movm, title=None):
+def plot_overlay(img_fix, img_mov, title=None):
     """
     ideally the fixed image is in gray scale
     """

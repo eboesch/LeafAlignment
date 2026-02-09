@@ -1,22 +1,21 @@
 import os
 import cv2
 import kornia as K
-# import kornia.feature as KF
-# import kornia.geometry.transform as KT
-# import matplotlib.pyplot as plt
-# import matplotlib.cm as cm
 import numpy as np
 import torch
-# from kornia_moons.viz import draw_LAF_matches
-# import skimage as ski
 from utils import crop_img, convert_image_to_tensor
+from loftr import loftr_match, tps_skimage
+from plotting import plot_image_pair, plot_matches, plot_matches_conf, plot_match_coverage
+from DatasetTools.LeafImageSeries import LeafDataset
 
 # ----------------- masking ------------------------------------------
 
 
 def keypoints_roi_to_image(kp_roi: np.ndarray, roi: dict):
     """
-    kp_crop: (N,2) keypoints in crop coordinates (TXT)
+    converts the keypoint coordinates from the ROI coordinate system to the coordinate system of the full image
+
+    kp_roi: (N,2) keypoints in ROI coordinates (TXT)
     roi: dict with rotation_matrix (2x3) and bounding_box
     Returns: kp_full (N,2) in original image coordinates
     """
@@ -43,6 +42,18 @@ def keypoints_roi_to_image(kp_roi: np.ndarray, roi: dict):
     return kp_full
 
 def mask_leaf(img: torch.Tensor, keypts: np.ndarray, erode_px: int = 0, return_center: bool=True, return_bounds: bool=False):
+    """
+    Creates a mask based on the convex hull of the keypoints, and masks the image accordingly.
+    If erode_px > 0: erodes the mask by as many pixels
+
+    Returns:
+        masked img
+        mask
+
+    Optional:
+        approximate center of the leaf
+        bounds of the leaf
+    """
     img = convert_image_to_tensor(img)
 
     B,C,H,W = img.shape
@@ -76,8 +87,11 @@ def mask_leaf(img: torch.Tensor, keypts: np.ndarray, erode_px: int = 0, return_c
 
 def scale_image(img: torch.Tensor, scale: float, center: np.array=None):
     """
+    scales up an image by a given factor
+
     img: (C,H,W) or (B,C,H,W) torch tensor
     scale: float >1 to enlarge
+    center: center through which to scale. if None, uses center of image.
     """
     # Add batch dimension if necessary
     if img.dim() == 3:
@@ -103,43 +117,10 @@ def scale_image(img: torch.Tensor, scale: float, center: np.array=None):
 
     return img_scaled
 
-def erode_mask_by_scaling(mask: torch.Tensor, scale: float):
+def erode_leaf_keypoints(leaf: LeafDataset, index: int, scale: float=1.2, return_mask: bool=False):
     """
-    mask: (1,H,W) or (B,1,H,W) torch tensor
-    scale: <1 to shrink the mask (simulate erosion)
-    Returns: resized mask with same original image size
-    """
-    # Add batch dim if needed
-    if mask.dim() == 3:
-        mask = mask.unsqueeze(0)  # (1,1,H,W)
-
-    B, C, H, W = mask.shape
-    device = mask.device
-    dtype = mask.dtype
-
-    # Resize mask: shrink by scale factor
-    new_H = int(H * scale)
-    new_W = int(W * scale)
-    mask_small = F.interpolate(mask, size=(new_H, new_W), mode='nearest')
-
-    # Pad back to original size and center
-    pad_top = (H - new_H) // 2
-    pad_bottom = H - new_H - pad_top
-    pad_left = (W - new_W) // 2
-    pad_right = W - new_W - pad_left
-
-    mask_eroded = F.pad(mask_small, (pad_left, pad_right, pad_top, pad_bottom), mode='constant', value=0)
-
-    # Remove batch dim if needed
-    if mask_eroded.shape[0] == 1:
-        mask_eroded = mask_eroded.squeeze(0)
-
-    return mask_eroded
-
-
-def erode_leaf_keypoints(leaf, index, scale=1.2, return_mask=False):
-    """
-    erode leaf background based on keypoints
+    creates a leaf mask of the full-scale image based on keypoints,
+    then erodes the background by scaling.
     """
     # img = available_data['images'][index]
     kpts_img = keypoints_roi_to_image(leaf.keypoints[index], leaf.rois[index])
@@ -149,10 +130,14 @@ def erode_leaf_keypoints(leaf, index, scale=1.2, return_mask=False):
     if return_mask:
         return masked_scaled_img, mask_t
     else:
-        return masked_scaled_img,
+        return masked_scaled_img
 
 
-def erode_crop_leaf(leaf, index, scale=1.2, return_mask=False):
+def erode_crop_leaf(leaf: LeafDataset, index: int, scale: float=1.2, return_mask: bool=False):
+    """
+    creates a leaf mask based on the keypoints, and masks the leaf accordingly, 
+    then crops away all-black areas. finally erodes markers by scaling.
+    """
     kpts_img = keypoints_roi_to_image(leaf.keypoints[index], leaf.rois[index])
     if kpts_img is None:
         if return_mask:
@@ -172,7 +157,12 @@ def erode_crop_leaf(leaf, index, scale=1.2, return_mask=False):
     else:
         return masked_scaled_img
 
-def erode_leaf(img, mask, scale=1.2, erode_px=60, return_mask=True):
+def erode_leaf(img: torch.Tensor, mask: torch.Tensor, scale: float=1.2, erode_px: int=60, return_mask: bool=True):
+    """
+    erodes leaf. if erode_px > 0, the mask is eroded. otherwise, erode by scaling
+
+    Returns masked eroded leaf, optionally also returns (eroded) mask.
+    """
     masked_img = img * mask
 
     if erode_px > 0:
@@ -191,6 +181,11 @@ def erode_leaf(img, mask, scale=1.2, erode_px=60, return_mask=True):
         return out_img
 
 def crop_ROI_erode_leaf(leaf, ind, scale=1.2, erode_px=60, return_mask=True):
+    """
+    crops and rotates leaf to ROI, then creates a mask based on keypoints and erodes leaf.
+
+    Returns cropped eroded leaf, optionally also returns (eroded) mask.
+    """
     img = convert_image_to_tensor(leaf.images[ind])
     H, W = img.shape[2], img.shape[3]
     roi = leaf.rois[ind]
@@ -210,27 +205,63 @@ def crop_ROI_erode_leaf(leaf, ind, scale=1.2, erode_px=60, return_mask=True):
     # generate mask via keypoints
     masked_img, mask_t, center = mask_leaf(img, keypoints, erode_px=erode_px, return_center=True, return_bounds=False)
 
+    # erode leaf
     if erode_px == 0:    
         img_scaled = scale_image(masked_img, scale, center)
         masked_img = img_scaled * mask_t 
+
     if return_mask:
         return masked_img, mask_t
     else:
         return masked_img
 
-def fetch_leaves(indices: list, leaf, background_type: str='Original'):
+def fetch_leaves(indices: list, leaf: LeafDataset, background_type: str='Original'):
+    """
+    for each index in indices fetches to according element of the leaf series and treats the background as specified.
+
+    background_type:
+        "Original": the full image is returned, with no preprocessing.
+        "Eroded": the full image is masked and eroded based on keypoints
+        "Eroded+Cropped": the image is masked and eroded based on keypoints and then cropped to only the ROI
+    """
+
     if background_type == "Original":
-        img = [convert_image_to_tensor(leaf.images[index]) for index in indices]
+        imgs = [convert_image_to_tensor(leaf.images[index]) for index in indices]
     elif background_type == "Eroded":
-        img = [erode_leaf(leaf, index=index) for index in indices]
+        imgs = [erode_leaf_keypoints(leaf, index=index) for index in indices]
     elif background_type == "Eroded+Cropped":
-        img = [erode_crop_leaf(leaf, index=index) for index in indices]
+        imgs = [erode_crop_leaf(leaf, index=index) for index in indices]
     else:
         raise ValueError(f"Unknown background type '{background_type}'")
 
-    return img
+    return imgs
 
-def fetch_image_mask_pair(leaf, fixed_img_ind, moving_img_ind, method, plot_masked_images=False, plot_loftr_matches=False, old=False):
+def fetch_image_mask_pair(leaf: LeafDataset, fixed_img_ind: int, moving_img_ind: int, method: str, plot_masked_images: bool=False, plot_loftr_matches: bool=False, old: bool=False):
+    """
+    for the given index pair, fetches registered fixed and moving image plus matching masks.
+
+    Args:
+        leaf: leaf sequence to retrieve data from
+        fixed_img_ind: index of the fixed image
+        moving_img_ind: index of the moving image
+        method: registration to utilize
+            "Piecewise Affine": Jonas' pre-existing method
+            "LoFTR + TPS Full": TPS based on LoFTR matches on full leaf
+            "LoFTR + TPS Full with Markers": TPS based on LoFTR matches on full leaf, without eroding away markers
+            "LoFTR + TPS ROI": TPS based on LoFTR matches only on ROI
+            "LoFTR + TPS ROI with Markers": TPS based on LoFTR matches only on ROI, without eroding away markers
+        plot_masked_images: if True, displays images & masks after masking, before registration
+        plot_loftr_matches: if True, displays diagnostic images of matches detected by LoFTR
+        old: flag for using previous masking strategy
+
+    Returns:
+        fixed image
+        registered moving image
+        mask for fixed image
+        registered moving image
+
+    """
+    
     if method == "Pairwise Affine":
         img_fixed = convert_image_to_tensor(leaf.target_images[fixed_img_ind])
         mask_fixed = convert_image_to_tensor(leaf.target_masks[fixed_img_ind])

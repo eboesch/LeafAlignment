@@ -1,27 +1,12 @@
 import os
-# import cv2
 import csv
-# import kornia as K
-# import kornia.feature as KF
-# import kornia.geometry.transform as KT
-# import matplotlib.pyplot as plt
-# import matplotlib.cm as cm
-# import matplotlib as mpl
-# import matplotlib.gridspec as gridspec
-# from matplotlib.ticker import MaxNLocator
-# import seaborn as sns
+import kornia as K
 import numpy as np
-# import torch
-# import torch.nn.functional as F
-# import skimage as ski
-# import pandas as pd
-# from scipy.stats import t
-# import math
+import torch
 from tqdm import tqdm
 
-# from utils import *
+from utils import convert_image_to_tensor
 from metrics import mse_masked, local_ncc_masked, nmi_masked, ssim_masked, iou, hausdorff
-# from loftr import plot_image_pair, plot_overlay, scale_image, loftr_match, tps_skimage, erode_crop_leaf, plot_matches, plot_matches_conf, plot_match_coverage, mask_leaf, crop_ROI_erode_leaf
 from DatasetTools.LeafImageSeries import LeafDataset
 from masking import fetch_image_mask_pair
 
@@ -36,7 +21,8 @@ warnings.filterwarnings(
 
 
 if __name__ == "__main__":
-    out_file = "registration_eval3.csv"
+    out_file = "test.csv"
+    # out_file = "registration_eval3.csv"
 
     metrics = {'MSE': mse_masked, 'NCC': local_ncc_masked, 'MI': nmi_masked, 'SSIM': ssim_masked, 'IoU': iou, 'Hausdorff': hausdorff}
 

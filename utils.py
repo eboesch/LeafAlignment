@@ -1,18 +1,7 @@
-# import os
-# import cv2
 import kornia as K
-# import kornia.feature as KF
 import kornia.geometry.transform as KT
-# import matplotlib.pyplot as plt
-# import matplotlib.cm as cm
 import numpy as np
 import torch
-# import torch.nn.functional as F
-# from kornia_moons.viz import draw_LAF_matches
-# import skimage as ski
-# from skimage.metrics import structural_similarity as ssim
-# from skimage.metrics import normalized_mutual_information as nmi
-# from monai.metrics import compute_hausdorff_distance
 
 
 def crop_coords_zero_borders(mask: torch.Tensor):
