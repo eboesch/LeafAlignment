@@ -6,6 +6,7 @@ import numpy as np
 import torch
 import skimage as ski
 from utils import convert_image_to_tensor
+from plotting import plot_matches_conf, plot_match_coverage
 
 def load_resize_image(img_path: str, H: int=375, W: int=600):
     """
@@ -117,7 +118,47 @@ def tps_skimage(keypts_fix, keypts_mov, confidence, thrsld, img_mov, verbose=Fal
 
     return warped, tps
 
+def warp_tps(img, tps, verbose=False):
+    # kornia and torch expect C x H x W, while skimage expects H x W x C
+    img = K.tensor_to_image(img)
 
+    if verbose:
+        print("Transforming moving image...")
+    warped = ski.transform.warp(img, tps) # warp uses inverse transform, i.e. img_mov -> img_fix
+
+    return warped
+
+
+def register_loftr_tps(img_fixed, img_moving, threshold=0.5, mask_moving: torch.Tensor=None, verbose=False, plot_loftr_matches=False, return_tps=False):
+    mkpts0, mkpts1, confidence, _, n_matches = loftr_match(img_fixed, img_moving, verbose=verbose, return_n_matches=True)
+
+    if plot_loftr_matches:
+        fig, ax = plot_matches_conf(img_fixed, mkpts0, img_moving, mkpts1, confidence, N_show=50, vertical=True)
+        fig.show()
+        fig, axs = plot_match_coverage(img_fixed, mkpts0, img_moving, mkpts1, confidence)
+        fig.show()
+    
+    if n_matches['conf_matches'] > 3:
+        warped_moving_img, tps = tps_skimage(mkpts0, mkpts1, confidence, threshold, img_moving, verbose=verbose)
+        if mask_moving is not None:
+            # warped_moving_mask, tps = tps_skimage(mkpts0, mkpts1, confidence, threshold, mask_moving, verbose=False)
+            warped_moving_mask = warp_tps(mask_moving, tps, verbose)
+    else:
+        print("No enough matches for TPS found")
+        warped_moving_img = None
+        warped_moving_mask = None
+        tps = None
+    
+    if return_tps:
+        if mask_moving is not None:
+            return warped_moving_img, warped_moving_mask, tps
+        else:
+            return warped_moving_img, tps
+    else:
+        if mask_moving is not None:
+            return warped_moving_img, warped_moving_mask
+        else:
+            return warped_moving_img
 
 
 

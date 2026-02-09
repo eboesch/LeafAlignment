@@ -120,6 +120,97 @@ def crop_img(img, x_min, x_max, y_min, y_max, center=None):
     else:
         return cropped_img 
 
+def undo_rotation(img, M_cv2):
+    """
+    img: (B, C, H, W)
+    M_cv2: (2, 3) affine used previously with cv2.warpAffine
+    """
+    B, C, H, W = img.shape
+    device, dtype = img.device, img.dtype
+
+    # bring cv2 matrix into torch
+    M = torch.tensor(M_cv2, device=device, dtype=dtype)
+    M = M.unsqueeze(0).repeat(B, 1, 1)
+
+    # invert affine
+    M_inv = K.geometry.transform.invert_affine_transform(M)
+
+    # original image corners (pixel coords)
+    corners = torch.tensor(
+        [[[0, 0, 1],
+          [W, 0, 1],
+          [W, H, 1],
+          [0, H, 1]]],
+        device=device,
+        dtype=dtype
+    ).transpose(1, 2)
+
+    warped = M_inv @ corners
+    xs, ys = warped[:, 0], warped[:, 1]
+
+    min_x, max_x = xs.min(), xs.max()
+    min_y, max_y = ys.min(), ys.max()
+
+    new_W = int(torch.ceil(max_x - min_x).item())
+    new_H = int(torch.ceil(max_y - min_y).item())
+
+    # shift so everything is visible
+    M_inv[:, 0, 2] -= min_x
+    M_inv[:, 1, 2] -= min_y
+
+    out = K.geometry.transform.warp_affine(
+        img,
+        M_inv,
+        dsize=(new_H, new_W),
+        mode="bilinear",
+        padding_mode="zeros",
+        align_corners=False
+    )
+
+    return out
+
+def match_sizes_resize(img1: torch.Tensor, img2: torch.Tensor, mask1: torch.Tensor=None, mask2: torch.Tensor=None, size_factor: int=None):
+    if (mask1 is None) != (mask2 is None):
+        raise ValueError("Provide both mask1 and mask2, or neither.")
+    
+    # resize
+    height = max(img1.shape[-2], img2.shape[-2])
+    width = max(img1.shape[-1], img2.shape[-1])
+
+    padder = K.augmentation.PadTo((height, width))
+
+    img1 = padder(img1)
+    img2 = padder(img2)   
+
+    if size_factor is None:
+        total = height * width * 1e-6
+        if total < 1.5:
+            size_factor = 1
+        elif total < 6:
+            size_factor = 2
+        elif total < 13.5:
+            size_factor = 3
+        else:
+            size_factor = 4
+
+
+    H = int(height/size_factor)
+    W = int(width/size_factor) 
+
+    img1 = K.geometry.resize(img1, (H, W), antialias=True)
+    img2 = K.geometry.resize(img2, (H, W), antialias=True)
+
+    if mask1 is None:
+        return img1, img2 
+
+    mask1 = padder(mask1)
+    mask2 = padder(mask2)
+
+    mask1 = K.geometry.resize(mask1, (H, W), antialias=False, interpolation='nearest')
+    mask2 = K.geometry.resize(mask2, (H, W), antialias=False, interpolation='nearest')
+
+    return img1, img2, mask1, mask2
+
 def pil_to_kornia(pil_img):
     np_img = np.array(pil_img)
     tensor_img = K.image_to_tensor(np_img).float() / 255.0 
@@ -135,6 +226,9 @@ def convert_image_to_tensor(img):
         img = K.image_to_tensor(img)
         if img.dim() == 3:
             img = img.unsqueeze(0)
+        # convert to [0,1] range
+        if img.max() > 1:
+            img = img/255.0
         return img
     else:
         return pil_to_kornia(img)

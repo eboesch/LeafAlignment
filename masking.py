@@ -3,7 +3,7 @@ import cv2
 import kornia as K
 import numpy as np
 import torch
-from utils import crop_img, convert_image_to_tensor
+from utils import crop_img, convert_image_to_tensor, crop_coords_zero_borders, undo_rotation
 from loftr import loftr_match, tps_skimage
 from plotting import plot_image_pair, plot_matches, plot_matches_conf, plot_match_coverage
 from DatasetTools.LeafImageSeries import LeafDataset
@@ -215,6 +215,7 @@ def crop_ROI_erode_leaf(leaf, ind, scale=1.2, erode_px=60, return_mask=True):
     else:
         return masked_img
 
+
 def fetch_leaves(indices: list, leaf: LeafDataset, background_type: str='Original'):
     """
     for each index in indices fetches to according element of the leaf series and treats the background as specified.
@@ -236,7 +237,112 @@ def fetch_leaves(indices: list, leaf: LeafDataset, background_type: str='Origina
 
     return imgs
 
-def fetch_image_mask_pair(leaf: LeafDataset, fixed_img_ind: int, moving_img_ind: int, method: str, plot_masked_images: bool=False, plot_loftr_matches: bool=False, old: bool=False):
+
+def fetch_full_leaf(leaf: LeafDataset, ind: int, erode_px: int=200, scaling: float=1.3):
+    """
+    
+    # needs cropped_images + seg_masks
+    """
+    img = convert_image_to_tensor(leaf.cropped_images[ind])
+    mask = convert_image_to_tensor(leaf.seg_masks[ind])
+    if (img is None) or (mask is None): 
+        print(f"Error: missing data for leaf {leaf.leaf_uid} at index {ind}")
+        return None, None
+    mask[mask!=0] = 1
+
+    # erode
+    img, mask = erode_leaf(img, mask, scale=scaling, erode_px=erode_px, return_mask=True)
+
+    # crop away all-black boundaries
+    rmin, rmax, cmin, cmax = crop_coords_zero_borders(mask)
+    img = crop_img(img, cmin, cmax, rmin, rmax)
+    mask = crop_img(mask, cmin, cmax, rmin, rmax)
+    
+    return img, mask
+
+def fetch_rotated_ROI(leaf, ind, erode_px: int=150, scaling: float=1.3):
+    """
+    
+    # uses roi, seg_masks, det_masks, images
+    """
+    img = convert_image_to_tensor(leaf.roi_leaf_images[ind])
+    mask = convert_image_to_tensor(leaf.roi_leaf_masks[ind])#.type(torch.float32)
+    if (img is None) or (mask is None): 
+        print(f"Error: missing data for leaf {leaf.leaf_uid} at index {ind}")
+        return None, None
+
+    # erode
+    img, mask = erode_leaf(img, mask, scale=scaling, erode_px=erode_px, return_mask=True)
+
+    # crop away all-black boundaries
+    rmin, rmax, cmin, cmax = crop_coords_zero_borders(mask)
+    img = crop_img(img, cmin, cmax, rmin, rmax)
+    mask = crop_img(mask, cmin, cmax, rmin, rmax)
+    
+    return img, mask
+
+def fetch_unrotated_ROI(leaf, ind, erode_px: int=150, scaling: float=1.3):
+    img, mask = fetch_rotated_ROI(leaf, ind, erode_px, scaling)
+    if (img is None) or (mask is None): 
+        return None, None
+
+    # undo rotation
+    rot = leaf.rois[ind]['rotation_matrix']
+    img = undo_rotation(img, rot)
+    mask = undo_rotation(mask, rot)
+
+    # crop away all-black boundaries
+    rmin, rmax, cmin, cmax = crop_coords_zero_borders(mask)
+    img = crop_img(img, cmin, cmax, rmin, rmax)
+    mask = crop_img(mask, cmin, cmax, rmin, rmax)
+    
+    return img, mask
+
+def fetch_preregistered_leaf(leaf, ind):
+    img = convert_image_to_tensor(leaf.target_images[ind])
+    mask = convert_image_to_tensor(leaf.target_masks[ind])
+    if (img is None) or (mask is None): 
+        print(f"Error: missing data for leaf {leaf.leaf_uid} at index {ind}")
+        return None, None
+    mask[mask != 0] = 1
+
+    if ind == 0:
+        # first image in sequence still has background
+        img = img * mask
+
+    return img, mask
+
+def fetch_image_mask_pair(leaf, ind, img_scale: str="full", pre_rotate: bool=False, erase_markers: bool=True, use_scaling_erosion: bool=False, erode_px: int=None, scaling: float=None):
+    # set up kwargs for erosion
+    erosion_kwargs = {}
+    if use_scaling_erosion:
+        erode_px = 0
+    if erase_markers == False:
+        erode_px = 0
+        scaling = 1
+    if erode_px is not None:
+        erosion_kwargs["erode_px"] = erode_px
+    if scaling is not None:
+        erosion_kwargs["scaling"] = scaling
+
+    
+    if img_scale == "full":
+        return fetch_full_leaf(leaf, ind, **erosion_kwargs)
+    elif img_scale == "roi":
+        if pre_rotate == True:
+            return fetch_rotated_ROI(leaf, ind, **erosion_kwargs)
+
+        else:
+            return fetch_unrotated_ROI(leaf, ind, **erosion_kwargs)
+    
+    # elif img_scale == "pre-registered":
+    #     return fetch_preregistered_leaf(leaf, ind)
+
+    else:
+        raise ValueError(f"Unknown image scale {img_scale}. Expected 'full' or 'roi'.")        
+
+
+def fetch_registered_image_mask_pair(leaf, fixed_img_ind, moving_img_ind, method, plot_masked_images=False, plot_loftr_matches=False):
     """
     for the given index pair, fetches registered fixed and moving image plus matching masks.
 
@@ -250,9 +356,10 @@ def fetch_image_mask_pair(leaf: LeafDataset, fixed_img_ind: int, moving_img_ind:
             "LoFTR + TPS Full with Markers": TPS based on LoFTR matches on full leaf, without eroding away markers
             "LoFTR + TPS ROI": TPS based on LoFTR matches only on ROI
             "LoFTR + TPS ROI with Markers": TPS based on LoFTR matches only on ROI, without eroding away markers
+            "LoFTR + TPS ROI Pre-Rotated": TPS based on LoFTR matches only on ROI, where ROI is already rotated  to align with the image borders
+            "LoFTR + TPS ROI Pre-Rotated with Markers": TPS based on LoFTR matches only on pre-rotated ROI, without eroding away markers
         plot_masked_images: if True, displays images & masks after masking, before registration
         plot_loftr_matches: if True, displays diagnostic images of matches detected by LoFTR
-        old: flag for using previous masking strategy
 
     Returns:
         fixed image
@@ -261,131 +368,36 @@ def fetch_image_mask_pair(leaf: LeafDataset, fixed_img_ind: int, moving_img_ind:
         registered moving image
 
     """
-    
     if method == "Piecewise Affine":
-        img_fixed = convert_image_to_tensor(leaf.target_images[fixed_img_ind])
-        mask_fixed = convert_image_to_tensor(leaf.target_masks[fixed_img_ind])
-        if (img_fixed is None) or (mask_fixed is None): 
-            print(f"Error: missing data for leaf {leaf.leaf_uid}")
-            return img_fixed, None, mask_fixed, None
-        mask_fixed[mask_fixed != 0] = 1
-
-        img_moving = convert_image_to_tensor(leaf.target_images[moving_img_ind])
-        mask_moving = convert_image_to_tensor(leaf.target_masks[moving_img_ind])
-        if (img_moving is None) or (mask_moving is None): 
-            print(f"Error: missing data for leaf {leaf.leaf_uid}")
-            return img_fixed, img_moving, mask_fixed, mask_moving
-        mask_moving[mask_moving != 0] = 1
+        img_fixed, mask_fixed = fetch_preregistered_leaf(leaf, fixed_img_ind)
+        img_moving, mask_moving = fetch_preregistered_leaf(leaf, moving_img_ind)
         return img_fixed, img_moving, mask_fixed, mask_moving
         
     else:
         
-        if method in ("LoFTR + TPS ROI", "LoFTR + TPS ROI with Markers"):
-            # if we want to keep the markers, don't rescale the image
-            if old:
-                img_scale = {"scale": 1} if method == "LoFTR + TPS ROI with Markers" else {}
-            erosion = {"scale": 1, "erode_px": 0} if method == "LoFTR + TPS ROI with Markers" else {"erode_px": 150}
-
-
-            # fixed image
-            if fixed_img_ind == 0:
-                img_fixed = convert_image_to_tensor(leaf.images[fixed_img_ind])
-                mask_fixed = convert_image_to_tensor(leaf.leaf_masks[fixed_img_ind])
-
-                # if plot_masked_images:
-                #     fig, ax = plot_image_pair(img_fixed, mask_fixed, fixed_img_ind, fixed_img_ind, title="Input for fixed image")
-                #     fig.show()
-
-                H, W = img_fixed.shape[2], img_fixed.shape[3]
-                roi = leaf.rois[fixed_img_ind]
-                rot_mat = roi["rotation_matrix"]
-                bbox = roi["bounding_box"]
-                if rot_mat is None or bbox is None:
-                    print(f"Error: missing data for leaf {leaf.leaf_uid}")
-                    return None, None, None, None
-                rot_mat = np.asarray(rot_mat)
-                bbox = np.asarray(bbox)
-
-                img_fixed = K.geometry.transform.warp_affine(img_fixed, torch.Tensor(rot_mat).unsqueeze(0), (H, W)) #, align_corners=True)
-                img_fixed = crop_img(img_fixed, bbox[:,0].min(), bbox[:,0].max()-1, bbox[:,1].min(), bbox[:,1].max()-1)
-                # img_fixed = img_fixed * mask_fixed
-                if old:
-                    img_fixed = erode_leaf(img_fixed, mask_fixed, return_mask=False, **img_scale)
-                else:
-                    img_fixed, mask_fixed = erode_leaf(img_fixed, mask_fixed, return_mask=True, **erosion)
-
-            else:
-                if old:
-                    img_fixed, mask_fixed = erode_crop_leaf(leaf, fixed_img_ind, return_mask=True, **img_scale)
-                else:
-                    img_fixed, mask_fixed = crop_ROI_erode_leaf(leaf, fixed_img_ind, return_mask=True, **erosion)
-            
-            if (img_fixed is None) or (mask_fixed is None): 
-                print(f"Error: missing data for leaf {leaf.leaf_uid}")
-                return img_fixed, None, mask_fixed, None
-
-            # moving image
-            if old:
-                img_moving, mask_moving = erode_crop_leaf(leaf, moving_img_ind, return_mask=True, **img_scale)
-            else:
-                img_moving, mask_moving = crop_ROI_erode_leaf(leaf, moving_img_ind, return_mask=True, **erosion)
-            if (img_moving is None) or (mask_moving is None): 
-                print(f"Error: missing data for leaf {leaf.leaf_uid}")
-                return img_fixed, img_moving, mask_fixed, mask_moving
-            size_factor = 2
-
-        elif method in ("LoFTR + TPS Full", "LoFTR + TPS Full with Markers"):
-            # if we want to keep the markers, don't rescale the image
-            img_scale = {"scale": 1} if method == "LoFTR + TPS ROI with Markers" else {}
-
-            # fixed image
-            img_fixed = convert_image_to_tensor(leaf.cropped_images[fixed_img_ind])
-            mask_fixed = convert_image_to_tensor(leaf.seg_masks[fixed_img_ind])
-            if (img_fixed is None) or (mask_fixed is None): 
-                print(f"Error: missing data for leaf {leaf.leaf_uid}")
-                return img_fixed, None, mask_fixed, None
-            mask_fixed[mask_fixed!=0] = 1
-            rmin, rmax, cmin, cmax = crop_coords_zero_borders(mask_fixed)
-            img_fixed = crop_img(img_fixed, cmin, cmax, rmin, rmax)
-            mask_fixed = crop_img(mask_fixed, cmin, cmax, rmin, rmax)
-            img_fixed = erode_leaf(img_fixed, mask_fixed, **img_scale)
-
-            # moving image
-            img_moving = convert_image_to_tensor(leaf.cropped_images[moving_img_ind])
-            mask_moving = convert_image_to_tensor(leaf.seg_masks[moving_img_ind])
-            if (img_moving is None) or (mask_moving is None): 
-                print(f"Error: missing data for leaf {leaf.leaf_uid}")
-                return img_fixed, img_moving, mask_fixed, mask_moving
-            mask_moving[mask_moving!=0] = 1
-            rmin, rmax, cmin, cmax = crop_coords_zero_borders(mask_moving)
-            img_moving = crop_img(img_moving, cmin, cmax, rmin, rmax)
-            mask_moving = crop_img(mask_moving, cmin, cmax, rmin, rmax)
-            img_moving = erode_leaf(img_moving, mask_moving, **img_scale)
-
-            size_factor = 4
-         
+        if method == "LoFTR + TPS ROI":
+            img_fixed, mask_fixed = fetch_image_mask_pair(leaf, fixed_img_ind, img_scale="roi", erase_markers=True, pre_rotate=False)
+            img_moving, mask_moving = fetch_image_mask_pair(leaf, moving_img_ind, img_scale="roi", erase_markers=True, pre_rotate=False)
+        elif method == "LoFTR + TPS ROI with Markers":
+            img_fixed, mask_fixed = fetch_image_mask_pair(leaf, fixed_img_ind, img_scale="roi", erase_markers=False, pre_rotate=False)
+            img_moving, mask_moving = fetch_image_mask_pair(leaf, moving_img_ind, img_scale="roi", erase_markers=False, pre_rotate=False)
+        elif method == "LoFTR + TPS ROI Pre-Rotated":
+            img_fixed, mask_fixed = fetch_image_mask_pair(leaf, fixed_img_ind, img_scale="roi", erase_markers=True, pre_rotate=True)
+            img_moving, mask_moving = fetch_image_mask_pair(leaf, moving_img_ind, img_scale="roi", erase_markers=True, pre_rotate=True)
+        elif method == "LoFTR + TPS ROI Pre-Rotated with Markers":
+            img_fixed, mask_fixed = fetch_image_mask_pair(leaf, fixed_img_ind, img_scale="roi", erase_markers=False, pre_rotate=True)
+            img_moving, mask_moving = fetch_image_mask_pair(leaf, moving_img_ind, img_scale="roi", erase_markers=False, pre_rotate=True)
+        elif method == "LoFTR + TPS Full":
+            img_fixed, mask_fixed = fetch_image_mask_pair(leaf, fixed_img_ind, img_scale="full", erase_markers=True)
+            img_moving, mask_moving = fetch_image_mask_pair(leaf, moving_img_ind, img_scale="full", erase_markers=True)
+        elif method == "LoFTR + TPS Full with Markers":
+            img_fixed, mask_fixed = fetch_image_mask_pair(leaf, fixed_img_ind, img_scale="full", erase_markers=False)
+            img_moving, mask_moving = fetch_image_mask_pair(leaf, moving_img_ind, img_scale="full", erase_markers=False)
         else:
             raise ValueError(f'Unknown registration method {method}')
 
         # resize
-        height = max(img_fixed.shape[-2], img_moving.shape[-2])
-        width = max(img_fixed.shape[-1], img_moving.shape[-1])
-
-        padder = K.augmentation.PadTo((height, width))
-
-        img_fixed = padder(img_fixed)
-        img_moving = padder(img_moving)
-        mask_fixed = padder(mask_fixed)
-        mask_moving = padder(mask_moving)        
-
-        
-        H = int(height/size_factor)
-        W = int(width/size_factor) 
-
-        img_fixed = K.geometry.resize(img_fixed, (H, W), antialias=True)
-        mask_fixed = K.geometry.resize(mask_fixed, (H, W), antialias=False, interpolation='nearest')
-        img_moving = K.geometry.resize(img_moving, (H, W), antialias=True)
-        mask_moving = K.geometry.resize(mask_moving, (H, W), antialias=False, interpolation='nearest')
+        img_fixed, img_moving, mask_fixed, mask_moving = match_sizes_resize(img_fixed, img_moving, mask_fixed, mask_moving)
 
         if plot_masked_images:
             fig, ax = plot_image_pair(img_fixed, img_moving, fixed_img_ind, moving_img_ind, title="Masked out input images", title_offset=0.7)
@@ -393,25 +405,7 @@ def fetch_image_mask_pair(leaf: LeafDataset, fixed_img_ind: int, moving_img_ind:
             fig, ax = plot_image_pair(mask_fixed, mask_moving, fixed_img_ind, moving_img_ind, title="corresponding masks", title_offset=0.7)
             fig.show()
 
-
-        mkpts0, mkpts1, confidence, _, n_matches = loftr_match(img_fixed, img_moving, verbose=False, return_n_matches=True)
-
-        if plot_loftr_matches:
-            # fig, ax = plot_matches(img_fixed, mkpts0, img_moving, mkpts1, inliers, inliers_only=False)
-            # fig.show()
-            fig, ax = plot_matches_conf(img_fixed, mkpts0, img_moving, mkpts1, confidence, N_show=50, vertical=True)
-            fig.show()
-            fig, axs = plot_match_coverage(img_fixed, mkpts0, img_moving, mkpts1, confidence)
-            fig.show()
-
-        thrsld = 0.5
+        # register
+        warped_moving_img, warped_moving_mask = register_loftr_tps(img_fixed, img_moving, mask_moving=mask_moving, verbose=False, plot_loftr_matches=plot_loftr_matches, return_tps=False)
         
-        if n_matches['conf_matches'] > 3:
-            warped_moving_img, tps = tps_skimage(mkpts0, mkpts1, confidence, thrsld, img_moving, verbose=False)
-            warped_moving_mask, tps = tps_skimage(mkpts0, mkpts1, confidence, thrsld, mask_moving, verbose=False)
-        else:
-            print("No enough matches for TPS found")
-            warped_moving_img = None
-            warped_moving_mask = None
-
         return img_fixed, warped_moving_img, mask_fixed, warped_moving_mask

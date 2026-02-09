@@ -8,7 +8,7 @@ from tqdm import tqdm
 from utils import convert_image_to_tensor
 from metrics import mse_masked, local_ncc_masked, nmi_masked, ssim_masked, iou, hausdorff
 from DatasetTools.LeafImageSeries import LeafDataset
-from masking import fetch_image_mask_pair
+from masking import fetch_registered_image_mask_pair
 
 import warnings
 warnings.filterwarnings(
@@ -95,7 +95,7 @@ if __name__ == "__main__":
                 for fixed_img_ind in fixed_img_indices:
                     for moving_img_ind in tqdm(moving_img_indices):
 
-                        fixed_img, moving_img, fixed_mask, moving_mask = fetch_image_mask_pair(leaf, fixed_img_ind, moving_img_ind, method)
+                        fixed_img, moving_img, fixed_mask, moving_mask = fetch_registered_image_mask_pair(leaf, fixed_img_ind, moving_img_ind, method)
                         
                         eval_res = {'leaf_uid': uid, 'registration_method': method, 'fixed_image': fixed_img_ind, 'moving_image': moving_img_ind}
 
