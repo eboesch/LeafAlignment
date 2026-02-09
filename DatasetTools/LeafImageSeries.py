@@ -107,9 +107,12 @@ class LeafDataset:
         self.det_masks = None
         self.seg_masks = None
         self.symptoms_masks = None
+        self.roi_leaf_images = None
+        self.roi_leaf_masks = None
         self.target_images = None
         self.warped_images = None
 
+        self.verbose = verbose
         if verbose:
             print("Loading requested values...")
         self._load_requested(load, verbose=verbose)
@@ -181,7 +184,9 @@ class LeafDataset:
             self.leaf_masks = self._load_images_from_dir(mask_dir)
 
         if 'det_masks' in load:
-            mask_dir = os.path.join(self.output_base, "predictions", "symptoms_det", "pred")
+            if verbose:
+                print("Loading Detection Masks...")
+            mask_dir = os.path.join(self.output_reg, "predictions", "symptoms_det", "pred")
             self.det_masks = self._load_images_from_dir(mask_dir)
 
         if 'seg_masks' in load:
@@ -189,6 +194,18 @@ class LeafDataset:
                 print("Loading Segmentation Masks...")
             mask_dir = os.path.join(self.output_reg, "predictions", "symptoms_seg", "pred")
             self.seg_masks = self._load_images_from_dir(mask_dir)
+
+        if 'symptom_masks' in load:
+            if verbose:
+                print("Generating Symptom Masks...")
+            self.combine_masks()
+
+        if 'roi_leaf_masks' in load:
+            if verbose:
+                print("Generating ROI Leaf Masks...")
+            if self.symptoms_masks == None:
+                self.combine_masks()
+            self.get_roi_leaf_mask()
 
         if 'target_images' in load:
             if verbose:
@@ -478,6 +495,64 @@ class LeafDataset:
             det_mask_ = np.where(det_mask_ == 0, det_mask_, det_mask_ + 4)
             seg_mask_ = np.asarray(self.seg_masks[i])
             self.symptoms_masks.append(np.where(det_mask_ == 0, seg_mask_, det_mask_))
+
+    def get_roi_leaf_mask(self):
+
+        self.roi_leaf_masks = []
+        self.roi_leaf_images = []
+
+        for i in tqdm(range(len(self.images)), desc="Processing series"):
+
+            # get elements
+            roi = self.rois[i]
+            if roi is None:
+                if self.verbose:
+                    print(f"No ROI data for index {i}")
+                self.roi_leaf_masks.append(None)
+                self.roi_leaf_images.append(None)
+                continue
+            bbox = np.asarray(roi["bounding_box"])
+            box = np.intp(bbox)
+            rot = np.asarray(roi['rotation_matrix'])
+            
+            rows, cols = np.asarray(self.images[i]).shape[:2]
+            _, mh = map(int, np.mean(box, axis=0))
+            # target = np.asarray(self.target_images[i])
+            symptoms_mask = self.symptoms_masks[i]
+
+            # full mask
+            full_mask = np.zeros((rows, cols)).astype("float32")
+            full_mask[mh - 1024:mh + 1024, :] = symptoms_mask
+
+            # binarize
+            leaf_mask = np.where(full_mask == 0, 0, 1).astype("float32")
+            
+            # rotate mask
+            leaf_mask_rot = cv2.warpAffine(leaf_mask, rot, (cols, rows))
+
+            # crop roi
+            roi_mask = leaf_mask_rot[box[0][1]:box[2][1], box[0][0]:box[1][0]]
+
+            # image
+            image = np.asarray(self.images[i])
+
+            # rotate image
+            leaf_image_rot = cv2.warpAffine(image, rot, (cols, rows))
+
+            # crop image roi
+            roi_image = leaf_image_rot[box[0][1]:box[2][1], box[0][0]:box[1][0]]
+
+            self.roi_leaf_masks.append(roi_mask)
+            self.roi_leaf_images.append(roi_image)
+
+            # # get leaf mask
+            # leaf_mask = utils.remove_points_from_mask(mask=full_mask, classes=kpt_cls)
+
+            # # rotate mask
+            # segmentation_mask_rot = cv2.warpAffine(segmentation_mask, rot, (cols, rows))
+
+            # # crop roi
+            # roi = segmentation_mask_rot[box[0][1]:box[2][1], box[0][0]:box[1][0]]
 
     def warp_masks(self, kpt_cls=[5,6], n_cls=6):
 

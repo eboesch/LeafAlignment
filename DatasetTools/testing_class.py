@@ -12,6 +12,13 @@ leaf = LeafDataset(
     load=('images', 'rois', 'tforms', 'target_masks', 'leaf_masks', 'instance_masks', 'det_masks', 'seg_masks', 'target_images', "keypoints")
 )
 
+
+leaf.combine_masks()  # combine detection and segmentation masks
+
+leaf.get_roi_leaf_mask()
+
+leaf.show_series(interval=1000, show=('roi_leaf_images', 'roi_leaf_masks'))
+
 # show a frame from the series
 leaf.show_frame(3, show=('instance_masks', 'target_images'))
 
