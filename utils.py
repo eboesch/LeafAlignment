@@ -120,7 +120,7 @@ def crop_img(img, x_min, x_max, y_min, y_max, center=None):
     else:
         return cropped_img 
 
-def undo_rotation(img, M_cv2):
+def undo_rotation(img, M_cv2, interpolation_mode: str="bilinear"):
     """
     img: (B, C, H, W)
     M_cv2: (2, 3) affine used previously with cv2.warpAffine
@@ -162,10 +162,12 @@ def undo_rotation(img, M_cv2):
         img,
         M_inv,
         dsize=(new_H, new_W),
-        mode="bilinear",
+        mode=interpolation_mode,
         padding_mode="zeros",
         align_corners=False
     )
+
+    out = torch.clamp(out, 0.0, 1.0) # clamp back to [0,1] to remove small overshoots
 
     return out
 
@@ -200,6 +202,9 @@ def match_sizes_resize(img1: torch.Tensor, img2: torch.Tensor, mask1: torch.Tens
     img1 = K.geometry.resize(img1, (H, W), antialias=True)
     img2 = K.geometry.resize(img2, (H, W), antialias=True)
 
+    img1 = torch.clamp(img1, 0.0, 1.0)
+    img2 = torch.clamp(img2, 0.0, 1.0)
+
     if mask1 is None:
         return img1, img2 
 
@@ -227,6 +232,8 @@ def convert_image_to_tensor(img):
         if img.dim() == 3:
             img = img.unsqueeze(0)
         # convert to [0,1] range
+        if img.max() < 1+1e-3:
+            img = torch.clamp(img, 0.0, 1.0)
         if img.max() > 1:
             img = img/255.0
         return img

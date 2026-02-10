@@ -140,9 +140,11 @@ def register_loftr_tps(img_fixed, img_moving, threshold=0.5, mask_moving: torch.
     
     if n_matches['conf_matches'] > 3:
         warped_moving_img, tps = tps_skimage(mkpts0, mkpts1, confidence, threshold, img_moving, verbose=verbose)
+        warped_moving_img = convert_image_to_tensor(warped_moving_img)
         if mask_moving is not None:
             # warped_moving_mask, tps = tps_skimage(mkpts0, mkpts1, confidence, threshold, mask_moving, verbose=False)
             warped_moving_mask = warp_tps(mask_moving, tps, verbose)
+            warped_moving_mask = convert_image_to_tensor(warped_moving_mask)
     else:
         print("No enough matches for TPS found")
         warped_moving_img = None

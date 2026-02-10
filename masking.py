@@ -266,7 +266,7 @@ def fetch_rotated_ROI(leaf, ind, erode_px: int=150, scaling: float=1.3):
     # uses roi, seg_masks, det_masks, images
     """
     img = convert_image_to_tensor(leaf.roi_leaf_images[ind])
-    mask = convert_image_to_tensor(leaf.roi_leaf_masks[ind])#.type(torch.float32)
+    mask = convert_image_to_tensor(leaf.roi_leaf_masks[ind])
     if (img is None) or (mask is None): 
         print(f"Error: missing data for leaf {leaf.leaf_uid} at index {ind}")
         return None, None
@@ -289,7 +289,7 @@ def fetch_unrotated_ROI(leaf, ind, erode_px: int=150, scaling: float=1.3):
     # undo rotation
     rot = leaf.rois[ind]['rotation_matrix']
     img = undo_rotation(img, rot)
-    mask = undo_rotation(mask, rot)
+    mask = undo_rotation(mask, rot, interpolation_mode="nearest") # use nearest-neighbor interpolation to retain binary values
 
     # crop away all-black boundaries
     rmin, rmax, cmin, cmax = crop_coords_zero_borders(mask)
