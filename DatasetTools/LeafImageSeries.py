@@ -82,12 +82,13 @@ class KeypointEditor:
 
 class LeafDataset:
 
-    def __init__(self, base_dir, leaf_uid=None, load=('images', 'tforms', 'rois', 'target_masks', 'target_images'), verbose=False):
+    def __init__(self, base_dir, leaf_uid=None, load: tuple=('images', 'tforms', 'rois', 'target_masks', 'target_images'), verbose=False):
         if verbose:
             print("Initializing dataset...")
         self.base_dir = base_dir
         self.leaf_uid = leaf_uid
         self.series = utils.get_series(path_images=os.path.join(base_dir, "raw", "*", "*"), leaf_uid=leaf_uid, verbose=verbose)[0]
+        self.n_leaves = len(self.series)
         self.image_uids = [os.path.basename(p) for p in self.series]
         self.output_base = os.path.join(base_dir, "processed", self.leaf_uid)
         self.output_reg = os.path.join(base_dir, "processed", "reg", self.leaf_uid)
@@ -111,6 +112,7 @@ class LeafDataset:
         self.roi_leaf_masks = None
         self.target_images = None
         self.warped_images = None
+        self.available_data = []
 
         self.verbose = verbose
         if verbose:
@@ -121,17 +123,35 @@ class LeafDataset:
         return re.search(r'(ESWW00\d+_\d+)', path).group(1)
 
     def _load_requested(self, load, verbose=False):
+        # ensure `load` is a tuple
+        if type(load)==str:
+            load = (load,)
+
+        # cover dependencies
+        if ('roi_leaf_masks' in load) and ('images' not in load):
+            load = load + ('images',)
+        if ('roi_leaf_masks' in load) and ('rois' not in load):
+            load = load + ('rois',)
+        if ('roi_leaf_masks' in load) and ('symptom_masks' not in load):
+            load = load + ('symptom_masks',)
+        if ('symptom_masks' in load) and ('det_masks' not in load):
+            load = load + ('det_masks',)
+        if ('symptom_masks' in load) and ('seg_masks' not in load):
+            load = load + ('seg_masks',)
+
         if 'images' in load:
             if verbose:
                 print("Loading images...")
             # self.images = [K.io.load_image(img_path, K.io.ImageLoadType.RGB32)[None, ...] for img_path in self.series]
             self.images = [Image.open(p) for p in self.series]
+            self.available_data.append('images')
         
         if 'cropped_images' in load:
             if verbose:
                 print("Loading cropped images...")
             crop_dir = os.path.join(self.output_reg, "crop")
             self.cropped_images = self._load_images_from_dir(crop_dir)
+            self.available_data.append('cropped_images')
             # self.images = [K.io.load_image(img_path, K.io.ImageLoadType.RGB32)[None, ...] for img_path in self.series]
             # self.images = [Image.open(p) for p in self.series]
 
@@ -151,6 +171,7 @@ class LeafDataset:
                 else:
                     print(f"Warning: tform not found for {name}")
                     self.tforms.append(None)
+            self.available_data.append('tforms')
                     
         if 'rois' in load:
             if verbose:
@@ -166,34 +187,40 @@ class LeafDataset:
                 else:
                     print(f"Warning: ROI not found for {name}")
                     self.rois.append(None)
+            self.available_data.append('rois')
 
         if 'target_masks' in load:
             if verbose:
                 print("Loading Target Masks...")
             target_mask_dir = os.path.join(self.output_reg, "mask_aligned", "piecewise")
             self.target_masks = self._load_images_from_dir(target_mask_dir)
+            self.available_data.append('target_masks')
 
         if 'instance_masks' in load:
             instance_mask_dir = os.path.join(self.output_ts, self.leaf_uid, "instance_mask" )
             self.instance_masks = self._load_images_from_dir(instance_mask_dir)
+            self.available_data.append('instance_masks')
 
         if 'leaf_masks' in load:
             if verbose:
                 print("Loading Leaf Masks...")
             mask_dir = os.path.join(self.output_ts, self.leaf_uid, "leaf_mask")
             self.leaf_masks = self._load_images_from_dir(mask_dir)
+            self.available_data.append('eaf_masks')
 
         if 'det_masks' in load:
             if verbose:
                 print("Loading Detection Masks...")
             mask_dir = os.path.join(self.output_reg, "predictions", "symptoms_det", "pred")
             self.det_masks = self._load_images_from_dir(mask_dir)
+            self.available_data.append('det_masks')
 
         if 'seg_masks' in load:
             if verbose:
                 print("Loading Segmentation Masks...")
             mask_dir = os.path.join(self.output_reg, "predictions", "symptoms_seg", "pred")
             self.seg_masks = self._load_images_from_dir(mask_dir)
+            self.available_data.append('seg_masks')
 
         if 'symptom_masks' in load:
             if verbose:
@@ -212,6 +239,7 @@ class LeafDataset:
                 print("Loading target images...")
             target_dir = os.path.join(self.output_reg, "result", "piecewise")
             self.target_images = self._load_images_from_dir(target_dir)
+            self.available_data.append('target_images')
 
         if 'keypoints' in load:
             if verbose:
@@ -229,6 +257,7 @@ class LeafDataset:
                 else:
                     print(f"Warning: keypoints not found for {name}")
                     self.keypoints.append(None)
+            self.available_data.append('keypoints')
 
         if 'edited_keypoints' in load:
             kpts_dir = os.path.join(self.output_base, "keypoints", "edited")
@@ -241,6 +270,7 @@ class LeafDataset:
                     self.edited_keypoints.append(coords)
                 else:
                     print(f"Warning: edited keypoints not found for {name}")
+            self.available_data.append('edited_keypoints')
 
     def _load_images_from_dir(self, dir_path):
         result = []
@@ -260,7 +290,7 @@ class LeafDataset:
 
         self.tforms_sorted = []
 
-        for i in tqdm(range(len(self.images)), desc="Processing series"):
+        for i in tqdm(range(self.n_leaves), desc="Processing series"):
 
             tf = self.tforms[i]
             image_uid = self.image_uids[i]
@@ -345,7 +375,7 @@ class LeafDataset:
         if len(show) == 1:
             axs = [axs]
 
-        n_frames = len(self.image_uids)
+        n_frames = self.n_leaves#len(self.image_uids)
 
         def find_first_valid_frame(element):
             data = getattr(self, element)
@@ -408,7 +438,7 @@ class LeafDataset:
     def review_keypoints(self, i, show='keypoints'):
         # Only initialize the list once
         if not hasattr(self, 'edited_keypoints') or not self.edited_keypoints:
-            self.edited_keypoints = [None] * len(self.images)
+            self.edited_keypoints = [None] * self.n_leaves#len(self.images)
 
         image = self.images[i]
 
@@ -489,12 +519,15 @@ class LeafDataset:
 
         self.symptoms_masks = []
 
-        for i in tqdm(range(len(self.images)), desc="Processing series"):
+        # for i in tqdm(range(len(self.images)), desc="Processing series"):
+        for i in tqdm(range(self.n_leaves), desc="Processing series"):
 
             det_mask_ = np.asarray(self.det_masks[i])
             det_mask_ = np.where(det_mask_ == 0, det_mask_, det_mask_ + 4)
             seg_mask_ = np.asarray(self.seg_masks[i])
             self.symptoms_masks.append(np.where(det_mask_ == 0, seg_mask_, det_mask_))
+        
+        self.available_data.append('symptom_masks')
 
     def get_roi_leaf_mask(self):
 
@@ -528,12 +561,15 @@ class LeafDataset:
             leaf_mask = np.where(full_mask == 0, 0, 1).astype("float32")
             
             # rotate mask
-            leaf_mask_rot = cv2.warpAffine(leaf_mask, rot, (cols, rows))
+            leaf_mask_rot = cv2.warpAffine(leaf_mask, rot, (cols, rows), flags=cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
 
             # crop roi
             roi_mask = leaf_mask_rot[box[0][1]:box[2][1], box[0][0]:box[1][0]]
 
-            # image
+            # convert to floats
+            roi_mask = roi_mask.astype(np.float32)
+
+            # ---- image -----
             image = np.asarray(self.images[i])
 
             # rotate image
@@ -553,12 +589,14 @@ class LeafDataset:
 
             # # crop roi
             # roi = segmentation_mask_rot[box[0][1]:box[2][1], box[0][0]:box[1][0]]
+        self.available_data.append('roi_leaf_images')
+        self.available_data.append('roi_leaf_masks')
 
     def warp_masks(self, kpt_cls=[5,6], n_cls=6):
 
         self.warped_masks = []
 
-        for i in tqdm(range(len(self.images)), desc="Processing series"):
+        for i in tqdm(range(len(self.rois)), desc="Processing series"):
 
             # get elements
             roi = self.rois[i]
