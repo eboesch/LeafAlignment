@@ -33,8 +33,8 @@ def loftr_match(img_fix, img_mov, verbose: bool=True, return_n_matches: bool=Fal
     Returns:
         Keypoints in fixed image
         Keypoints in moving image
-        Confidence of matches
         Classification of inliers, using RANSAC/Fundamental matrix
+        Confidence of matches
     """
 
     # match with LoFTR

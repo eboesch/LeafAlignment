@@ -2,6 +2,7 @@ import kornia as K
 import kornia.geometry.transform as KT
 import numpy as np
 import torch
+from typing import List
 
 
 def crop_coords_zero_borders(mask: torch.Tensor):
@@ -215,6 +216,73 @@ def match_sizes_resize(img1: torch.Tensor, img2: torch.Tensor, mask1: torch.Tens
     mask2 = K.geometry.resize(mask2, (H, W), antialias=False, interpolation='nearest')
 
     return img1, img2, mask1, mask2
+
+def match_sizes_resize_batch(imgs: List[torch.Tensor], masks: List[torch.Tensor]=None, size_factor: int=None):
+    # if masks is not None:
+    #     raise ValueError("Provide both mask1 and mask2, or neither.")
+    
+    # resize
+    
+    heights = [img.shape[-2] for img in imgs]
+    widths = [img.shape[-1] for img in imgs]
+
+    height = max(heights)
+    width = max(widths)
+
+    padder = K.augmentation.PadTo((height, width))
+
+    # padded_imgs = []
+    # for img in imgs:
+    #     padded_imgs.append(padder(img))
+    for i, img in enumerate(imgs):
+        imgs[i] = padder(img)
+
+    if size_factor is None:
+        total = height * width * 1e-6
+        if total < 1.5:
+            size_factor = 1
+        elif total < 6:
+            size_factor = 2
+        elif total < 13.5:
+            size_factor = 3
+        else:
+            size_factor = 4
+
+
+    H = int(height/size_factor)
+    W = int(width/size_factor) 
+
+    # resized_imgs = []
+    # for img in padded_imgs:
+    #     img = K.geometry.resize(img, (H, W), antialias=True)
+    #     img = torch.clamp(img, 0.0, 1.0)
+    #     resized_imgs.append(img)
+    for i, img in enumerate(imgs):
+        img = K.geometry.resize(img, (H, W), antialias=True)
+        img = torch.clamp(img, 0.0, 1.0)
+        imgs[i] = img
+
+    if masks is None:
+        # return resized_imgs 
+        return imgs
+
+    # padded_masks = []
+    # for mask in masks:
+    #     padded_masks.append(padder(mask))
+    for i, mask in enumerate(masks):
+        masks[i] = padder(mask)
+
+    # resized_masks = []
+    # for mask in padded_masks:
+    #     mask = K.geometry.resize(mask, (H, W), antialias=False, interpolation='nearest')
+    #     resized_masks.append(mask)
+    for i, mask in enumerate(masks):
+        mask = K.geometry.resize(mask, (H, W), antialias=True)
+        mask = torch.clamp(mask, 0.0, 1.0)
+        masks[i] = mask
+
+    # return resized_imgs, resized_masks
+    return imgs, masks
 
 def pil_to_kornia(pil_img):
     np_img = np.array(pil_img)
