@@ -218,25 +218,27 @@ def match_sizes_resize(img1: torch.Tensor, img2: torch.Tensor, mask1: torch.Tens
     return img1, img2, mask1, mask2
 
 def match_sizes_resize_batch(imgs: List[torch.Tensor], masks: List[torch.Tensor]=None, size_factor: int=None):
-    # if masks is not None:
-    #     raise ValueError("Provide both mask1 and mask2, or neither.")
+    # filter out None tensors for size computation
+    valid_imgs = [img for img in imgs if img is not None]
+    if len(valid_imgs) == 0:
+        # if all images are None, can just return them as is
+        return imgs if masks is None else (imgs, masks)
     
-    # resize
-    
-    heights = [img.shape[-2] for img in imgs]
-    widths = [img.shape[-1] for img in imgs]
+    heights = [img.shape[-2] for img in valid_imgs]
+    widths = [img.shape[-1] for img in valid_imgs]
 
     height = max(heights)
     width = max(widths)
 
     padder = K.augmentation.PadTo((height, width))
 
-    # padded_imgs = []
-    # for img in imgs:
-    #     padded_imgs.append(padder(img))
     for i, img in enumerate(imgs):
+        if img is None: # skip None images
+            continue
+
         imgs[i] = padder(img)
 
+    # determine resizing scale factor
     if size_factor is None:
         total = height * width * 1e-6
         if total < 1.5:
@@ -252,36 +254,29 @@ def match_sizes_resize_batch(imgs: List[torch.Tensor], masks: List[torch.Tensor]
     H = int(height/size_factor)
     W = int(width/size_factor) 
 
-    # resized_imgs = []
-    # for img in padded_imgs:
-    #     img = K.geometry.resize(img, (H, W), antialias=True)
-    #     img = torch.clamp(img, 0.0, 1.0)
-    #     resized_imgs.append(img)
     for i, img in enumerate(imgs):
+        if img is None: # skip None images
+            continue
+
         img = K.geometry.resize(img, (H, W), antialias=True)
         img = torch.clamp(img, 0.0, 1.0)
         imgs[i] = img
 
     if masks is None:
-        # return resized_imgs 
         return imgs
 
-    # padded_masks = []
-    # for mask in masks:
-    #     padded_masks.append(padder(mask))
     for i, mask in enumerate(masks):
+        if mask is None: # skip None mask
+            continue
         masks[i] = padder(mask)
 
-    # resized_masks = []
-    # for mask in padded_masks:
-    #     mask = K.geometry.resize(mask, (H, W), antialias=False, interpolation='nearest')
-    #     resized_masks.append(mask)
     for i, mask in enumerate(masks):
-        mask = K.geometry.resize(mask, (H, W), antialias=True)
+        if mask is None: # skip None mask
+            continue
+        mask = K.geometry.resize(mask, (H, W), antialias=False, interpolation='nearest')
         mask = torch.clamp(mask, 0.0, 1.0)
         masks[i] = mask
 
-    # return resized_imgs, resized_masks
     return imgs, masks
 
 def pil_to_kornia(pil_img):
@@ -325,6 +320,26 @@ def weighted_average(tensor, weights):
     weighted_average = weighted_sum / weight_sum
     return weighted_average
 
+def invert_list(l: list, last_ind: int, first_ind: int=1):
+    """
+    Given a list [a, b, c, d, e, f, ...], (locally) inverts the list and returns the list slice of [first_ind, ..., last_ind] 
+    of the *non-inverted* list. 
+
+    E.g. for first_ind=1 and last_ind=4, returns [e, d, c, b]
+
+    If last_ind=-1, all elements after (and including) first_ind are used. This is equivalent to using last_ind=len(l)-1
+
+    """
+    n = len(l)
+    if last_ind == -1:
+        last_ind = n-1
+    l_copy = list(reversed(l)) # to avoid altering the original list, make a local copy
+    if first_ind == 0:
+        return l_copy[n-1-last_ind:]
+    else: 
+        return l_copy[n-1-last_ind: -first_ind]
+    # l.reverse()
+    # return l[n-1-last_ind: -first_ind]
 
 
 # ------------- transforms ---------------------------------------

@@ -13,7 +13,7 @@ def iou(img1, mask1, img2, mask2):
     mask2 = convert_image_to_tensor(mask2).long()
     return K.metrics.mean_iou(mask2, mask1, 2, eps=1e-6)[0,1]
 
-def hausdorff(img1, img1_mask, img2, img2_mask, percentile=95):
+def hausdorff(img1, img1_mask, img2, img2_mask, percentile=97):
     img1_mask = convert_image_to_tensor(img1_mask).long()
     img2_mask = convert_image_to_tensor(img2_mask).long()
 
@@ -21,7 +21,7 @@ def hausdorff(img1, img1_mask, img2, img2_mask, percentile=95):
         y_pred=img2_mask,
         y=img1_mask,
         distance_metric="euclidean",
-        percentile=95,
+        percentile=percentile,
         include_background=False,
     )
 

@@ -126,6 +126,8 @@ class LeafDataset:
         # ensure `load` is a tuple
         if type(load)==str:
             load = (load,)
+        elif type(load)==list:
+            load = tuple(load)
 
         # cover dependencies
         if ('roi_leaf_masks' in load) and ('images' not in load):

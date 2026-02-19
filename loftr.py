@@ -86,7 +86,7 @@ def loftr_match(img_fix, img_mov, verbose: bool=True, return_n_matches: bool=Fal
         return mkpts0, mkpts1, confidence, inliers
 
 
-def tps_skimage(keypts_fix, keypts_mov, confidence, thrsld, img_mov, verbose=False):
+def tps_skimage(keypts_fix, keypts_mov, confidence, thrsld, img_mov, warp_moving: bool=True, verbose: bool=False):
     """
     Applies TPS to register moving image to fixed image. Keypoints are filtered by confidence.
 
@@ -107,16 +107,18 @@ def tps_skimage(keypts_fix, keypts_mov, confidence, thrsld, img_mov, verbose=Fal
     if verbose:
         print(f"Threshold set to {thrsld}")
 
-    # tps = ski.transform.ThinPlateSplineTransform()
     if verbose:
         print("Estimating TPS transform...")
-    # tps.estimate(img_fix_mks, img_mov_mks) # estimate transform from img_fix -> img_mov
     tps = ski.transform.ThinPlateSplineTransform.from_estimate(img_fix_mks, img_mov_mks)
-    if verbose:
-        print("Transforming moving image...")
-    warped = ski.transform.warp(img_mov_reordered, tps) # warp uses inverse transform, i.e. img_mov -> img_fix
 
-    return warped, tps
+    if warp_moving:
+        if verbose:
+            print("Transforming moving image...")
+        warped = ski.transform.warp(img_mov_reordered, tps) # warp uses inverse transform, i.e. img_mov -> img_fix
+
+        return warped, tps
+    else:
+        return None, tps
 
 def warp_tps(img, tps, verbose=False):
     # kornia and torch expect C x H x W, while skimage expects H x W x C
@@ -126,10 +128,31 @@ def warp_tps(img, tps, verbose=False):
         print("Transforming moving image...")
     warped = ski.transform.warp(img, tps) # warp uses inverse transform, i.e. img_mov -> img_fix
 
-    return warped
+    return convert_image_to_tensor(warped)
 
+def compose_tps(transforms):
+    def composed(coords):
+        for t in transforms:
+            coords = t(coords)
+        return coords
+    return composed
 
-def register_loftr_tps(img_fixed, img_moving, threshold=0.5, mask_moving: torch.Tensor=None, verbose=False, plot_loftr_matches=False, return_tps=False):
+def register_loftr_tps(img_fixed, img_moving, threshold=0.5, mask_moving: torch.Tensor=None, verbose: bool=False, plot_loftr_matches: bool=False, warp_moving: bool=True, return_tps: bool=False):
+    """
+    if `warp_moving` is False, the moving image is not warped and only the tps transform is returned
+    """
+    if img_fixed is None or img_moving is None:
+        if return_tps:
+            if mask_moving is not None:
+                return None, None, None
+            else:
+                return None, None
+        else:
+            if mask_moving is not None:
+                return None, None
+            else:
+                return None
+
     mkpts0, mkpts1, confidence, _, n_matches = loftr_match(img_fixed, img_moving, verbose=verbose, return_n_matches=True)
 
     if plot_loftr_matches:
@@ -139,17 +162,21 @@ def register_loftr_tps(img_fixed, img_moving, threshold=0.5, mask_moving: torch.
         fig.show()
     
     if n_matches['conf_matches'] > 3:
-        warped_moving_img, tps = tps_skimage(mkpts0, mkpts1, confidence, threshold, img_moving, verbose=verbose)
+        warped_moving_img, tps = tps_skimage(mkpts0, mkpts1, confidence, threshold, img_moving, warp_moving=warp_moving, verbose=verbose)
         warped_moving_img = convert_image_to_tensor(warped_moving_img)
-        if mask_moving is not None:
-            # warped_moving_mask, tps = tps_skimage(mkpts0, mkpts1, confidence, threshold, mask_moving, verbose=False)
-            warped_moving_mask = warp_tps(mask_moving, tps, verbose)
+        if not warp_moving:
+            return tps
+        elif mask_moving is not None:
+            # converting mask to bool makes warp use nearest-neighbor interpolation
+            warped_moving_mask = warp_tps(mask_moving.bool(), tps, verbose)
             warped_moving_mask = convert_image_to_tensor(warped_moving_mask)
     else:
         print("No enough matches for TPS found")
         warped_moving_img = None
         warped_moving_mask = None
         tps = None
+        if not warp_moving:
+            return tps
     
     if return_tps:
         if mask_moving is not None:
@@ -161,6 +188,8 @@ def register_loftr_tps(img_fixed, img_moving, threshold=0.5, mask_moving: torch.
             return warped_moving_img, warped_moving_mask
         else:
             return warped_moving_img
+
+    
 
 
 
