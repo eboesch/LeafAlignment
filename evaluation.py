@@ -8,7 +8,7 @@ from tqdm import tqdm
 from utils import convert_image_to_tensor
 from metrics import mse_masked, local_ncc_masked, nmi_masked, ssim_masked, iou, hausdorff
 from DatasetTools.LeafImageSeries import LeafDataset
-from masking import fetch_registered_image_mask_pair
+from registration import fetch_registered_image_mask_pair
 
 import warnings
 warnings.filterwarnings(
@@ -26,9 +26,9 @@ if __name__ == "__main__":
 
     metrics = {'MSE': mse_masked, 'NCC': local_ncc_masked, 'MI': nmi_masked, 'SSIM': ssim_masked, 'IoU': iou, 'Hausdorff': hausdorff}
 
-    METHODS = ["Pairwise Affine", "LoFTR + TPS ROI"]#, "LoFTR + TPS ROI with Markers"]
+    METHODS = ["Piecewise Affine", "LoFTR + TPS ROI"]#, "LoFTR + TPS ROI with Markers"]
     data_to_load = []
-    if "Pairwise Affine" in METHODS:
+    if "Piecewise Affine" in METHODS:
         data_to_load.extend(['target_images', 'target_masks'])
     if "LoFTR + TPS ROI" in METHODS or "LoFTR + TPS ROI with Markers" in METHODS:
         data_to_load.extend(['rois', 'images', 'keypoints', 'leaf_masks'])

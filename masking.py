@@ -298,19 +298,35 @@ def fetch_unrotated_ROI(leaf, ind, erode_px: int=150, scaling: float=1.3):
     
     return img, mask
 
-def fetch_preregistered_leaf(leaf, ind):
-    img = convert_image_to_tensor(leaf.target_images[ind])
-    mask = convert_image_to_tensor(leaf.target_masks[ind])
-    if (img is None) or (mask is None): 
-        print(f"Error: missing data for leaf {leaf.leaf_uid} at index {ind}")
-        return None, None
-    mask[mask != 0] = 1
+# def fetch_preregistered_leaf(leaf, ind):
+#     img = convert_image_to_tensor(leaf.target_images[ind])
+#     mask = convert_image_to_tensor(leaf.target_masks[ind])
+#     if (img is None) or (mask is None): 
+#         print(f"Error: missing data for leaf {leaf.leaf_uid} at index {ind}")
+#         return None, None
+#     mask[mask != 0] = 1
 
-    if ind == 0:
-        # first image in sequence still has background
-        img = img * mask
+#     if ind == 0:
+#         # first image in sequence still has background
+#         img = img * mask
 
-    return img, mask
+#     return img, mask
+
+# def fetch_preregistered_leaf_seq(leaf):
+#     imgs = [convert_image_to_tensor(leaf.target_images[ind]) for ind in range(leaf.n_leaves)]
+#     mask = [convert_image_to_tensor(leaf.target_masks[ind]) for ind in range(leaf.n_leaves)]
+#     for i, mask in enumerate(masks):
+#         if mask is None:
+#             print(f"Error: missing data for leaf {leaf.leaf_uid} at index {ind}")
+#             continue
+#         mask[mask != 0] = 1
+#         masks[i] = mask
+
+
+#     # first image in sequence still has background
+#     imgs[0] = imgs[0] * masks[0]
+
+#     return imgs, masks
 
 def fetch_image_mask_pair(leaf, ind, img_scale: str="full", pre_rotate: bool=False, erase_markers: bool=True, use_scaling_erosion: bool=False, erode_px: int=None, scaling: float=None):
     # set up kwargs for erosion
@@ -342,70 +358,70 @@ def fetch_image_mask_pair(leaf, ind, img_scale: str="full", pre_rotate: bool=Fal
         raise ValueError(f"Unknown image scale {img_scale}. Expected 'full' or 'roi'.")        
 
 
-def fetch_registered_image_mask_pair(leaf, fixed_img_ind, moving_img_ind, method, plot_masked_images=False, plot_loftr_matches=False):
-    """
-    for the given index pair, fetches registered fixed and moving image plus matching masks.
+# def fetch_registered_image_mask_pair(leaf, fixed_img_ind, moving_img_ind, method, plot_masked_images=False, plot_loftr_matches=False):
+#     """
+#     for the given index pair, fetches registered fixed and moving image plus matching masks.
 
-    Args:
-        leaf: leaf sequence to retrieve data from
-        fixed_img_ind: index of the fixed image
-        moving_img_ind: index of the moving image
-        method: registration to utilize
-            "Piecewise Affine": Jonas' pre-existing method
-            "LoFTR + TPS Full": TPS based on LoFTR matches on full leaf
-            "LoFTR + TPS Full with Markers": TPS based on LoFTR matches on full leaf, without eroding away markers
-            "LoFTR + TPS ROI": TPS based on LoFTR matches only on ROI
-            "LoFTR + TPS ROI with Markers": TPS based on LoFTR matches only on ROI, without eroding away markers
-            "LoFTR + TPS ROI Pre-Rotated": TPS based on LoFTR matches only on ROI, where ROI is already rotated  to align with the image borders
-            "LoFTR + TPS ROI Pre-Rotated with Markers": TPS based on LoFTR matches only on pre-rotated ROI, without eroding away markers
-        plot_masked_images: if True, displays images & masks after masking, before registration
-        plot_loftr_matches: if True, displays diagnostic images of matches detected by LoFTR
+#     Args:
+#         leaf: leaf sequence to retrieve data from
+#         fixed_img_ind: index of the fixed image
+#         moving_img_ind: index of the moving image
+#         method: registration to utilize
+#             "Piecewise Affine": Jonas' pre-existing method
+#             "LoFTR + TPS Full": TPS based on LoFTR matches on full leaf
+#             "LoFTR + TPS Full with Markers": TPS based on LoFTR matches on full leaf, without eroding away markers
+#             "LoFTR + TPS ROI": TPS based on LoFTR matches only on ROI
+#             "LoFTR + TPS ROI with Markers": TPS based on LoFTR matches only on ROI, without eroding away markers
+#             "LoFTR + TPS ROI Pre-Rotated": TPS based on LoFTR matches only on ROI, where ROI is already rotated  to align with the image borders
+#             "LoFTR + TPS ROI Pre-Rotated with Markers": TPS based on LoFTR matches only on pre-rotated ROI, without eroding away markers
+#         plot_masked_images: if True, displays images & masks after masking, before registration
+#         plot_loftr_matches: if True, displays diagnostic images of matches detected by LoFTR
 
-    Returns:
-        fixed image
-        registered moving image
-        mask for fixed image
-        registered moving image
+#     Returns:
+#         fixed image
+#         registered moving image
+#         mask for fixed image
+#         registered moving image
 
-    """
-    if method == "Piecewise Affine":
-        img_fixed, mask_fixed = fetch_preregistered_leaf(leaf, fixed_img_ind)
-        img_moving, mask_moving = fetch_preregistered_leaf(leaf, moving_img_ind)
-        return img_fixed, img_moving, mask_fixed, mask_moving
+#     """
+#     if method == "Piecewise Affine":
+#         img_fixed, mask_fixed = fetch_preregistered_leaf(leaf, fixed_img_ind)
+#         img_moving, mask_moving = fetch_preregistered_leaf(leaf, moving_img_ind)
+#         return img_fixed, img_moving, mask_fixed, mask_moving
         
-    else:
+#     else:
         
-        if method == "LoFTR + TPS ROI":
-            img_fixed, mask_fixed = fetch_image_mask_pair(leaf, fixed_img_ind, img_scale="roi", erase_markers=True, pre_rotate=False)
-            img_moving, mask_moving = fetch_image_mask_pair(leaf, moving_img_ind, img_scale="roi", erase_markers=True, pre_rotate=False)
-        elif method == "LoFTR + TPS ROI with Markers":
-            img_fixed, mask_fixed = fetch_image_mask_pair(leaf, fixed_img_ind, img_scale="roi", erase_markers=False, pre_rotate=False)
-            img_moving, mask_moving = fetch_image_mask_pair(leaf, moving_img_ind, img_scale="roi", erase_markers=False, pre_rotate=False)
-        elif method == "LoFTR + TPS ROI Pre-Rotated":
-            img_fixed, mask_fixed = fetch_image_mask_pair(leaf, fixed_img_ind, img_scale="roi", erase_markers=True, pre_rotate=True)
-            img_moving, mask_moving = fetch_image_mask_pair(leaf, moving_img_ind, img_scale="roi", erase_markers=True, pre_rotate=True)
-        elif method == "LoFTR + TPS ROI Pre-Rotated with Markers":
-            img_fixed, mask_fixed = fetch_image_mask_pair(leaf, fixed_img_ind, img_scale="roi", erase_markers=False, pre_rotate=True)
-            img_moving, mask_moving = fetch_image_mask_pair(leaf, moving_img_ind, img_scale="roi", erase_markers=False, pre_rotate=True)
-        elif method == "LoFTR + TPS Full":
-            img_fixed, mask_fixed = fetch_image_mask_pair(leaf, fixed_img_ind, img_scale="full", erase_markers=True)
-            img_moving, mask_moving = fetch_image_mask_pair(leaf, moving_img_ind, img_scale="full", erase_markers=True)
-        elif method == "LoFTR + TPS Full with Markers":
-            img_fixed, mask_fixed = fetch_image_mask_pair(leaf, fixed_img_ind, img_scale="full", erase_markers=False)
-            img_moving, mask_moving = fetch_image_mask_pair(leaf, moving_img_ind, img_scale="full", erase_markers=False)
-        else:
-            raise ValueError(f'Unknown registration method {method}')
+#         if method == "LoFTR + TPS ROI":
+#             img_fixed, mask_fixed = fetch_image_mask_pair(leaf, fixed_img_ind, img_scale="roi", erase_markers=True, pre_rotate=False)
+#             img_moving, mask_moving = fetch_image_mask_pair(leaf, moving_img_ind, img_scale="roi", erase_markers=True, pre_rotate=False)
+#         elif method == "LoFTR + TPS ROI with Markers":
+#             img_fixed, mask_fixed = fetch_image_mask_pair(leaf, fixed_img_ind, img_scale="roi", erase_markers=False, pre_rotate=False)
+#             img_moving, mask_moving = fetch_image_mask_pair(leaf, moving_img_ind, img_scale="roi", erase_markers=False, pre_rotate=False)
+#         elif method == "LoFTR + TPS ROI Pre-Rotated":
+#             img_fixed, mask_fixed = fetch_image_mask_pair(leaf, fixed_img_ind, img_scale="roi", erase_markers=True, pre_rotate=True)
+#             img_moving, mask_moving = fetch_image_mask_pair(leaf, moving_img_ind, img_scale="roi", erase_markers=True, pre_rotate=True)
+#         elif method == "LoFTR + TPS ROI Pre-Rotated with Markers":
+#             img_fixed, mask_fixed = fetch_image_mask_pair(leaf, fixed_img_ind, img_scale="roi", erase_markers=False, pre_rotate=True)
+#             img_moving, mask_moving = fetch_image_mask_pair(leaf, moving_img_ind, img_scale="roi", erase_markers=False, pre_rotate=True)
+#         elif method == "LoFTR + TPS Full":
+#             img_fixed, mask_fixed = fetch_image_mask_pair(leaf, fixed_img_ind, img_scale="full", erase_markers=True)
+#             img_moving, mask_moving = fetch_image_mask_pair(leaf, moving_img_ind, img_scale="full", erase_markers=True)
+#         elif method == "LoFTR + TPS Full with Markers":
+#             img_fixed, mask_fixed = fetch_image_mask_pair(leaf, fixed_img_ind, img_scale="full", erase_markers=False)
+#             img_moving, mask_moving = fetch_image_mask_pair(leaf, moving_img_ind, img_scale="full", erase_markers=False)
+#         else:
+#             raise ValueError(f'Unknown registration method {method}')
 
-        # resize
-        img_fixed, img_moving, mask_fixed, mask_moving = match_sizes_resize(img_fixed, img_moving, mask_fixed, mask_moving)
+#         # resize
+#         img_fixed, img_moving, mask_fixed, mask_moving = match_sizes_resize(img_fixed, img_moving, mask_fixed, mask_moving)
 
-        if plot_masked_images:
-            fig, ax = plot_image_pair(img_fixed, img_moving, fixed_img_ind, moving_img_ind, title="Masked out input images", title_offset=0.7)
-            fig.show()
-            fig, ax = plot_image_pair(mask_fixed, mask_moving, fixed_img_ind, moving_img_ind, title="corresponding masks", title_offset=0.7)
-            fig.show()
+#         if plot_masked_images:
+#             fig, ax = plot_image_pair(img_fixed, img_moving, fixed_img_ind, moving_img_ind, title="Masked out input images", title_offset=0.7)
+#             fig.show()
+#             fig, ax = plot_image_pair(mask_fixed, mask_moving, fixed_img_ind, moving_img_ind, title="corresponding masks", title_offset=0.7)
+#             fig.show()
 
-        # register
-        warped_moving_img, warped_moving_mask = register_loftr_tps(img_fixed, img_moving, mask_moving=mask_moving, verbose=False, plot_loftr_matches=plot_loftr_matches, return_tps=False)
+#         # register
+#         warped_moving_img, warped_moving_mask = register_loftr_tps(img_fixed, img_moving, mask_moving=mask_moving, verbose=False, plot_loftr_matches=plot_loftr_matches, return_tps=False)
         
-        return img_fixed, warped_moving_img, mask_fixed, warped_moving_mask
+#         return img_fixed, warped_moving_img, mask_fixed, warped_moving_mask
