@@ -6,6 +6,7 @@ import matplotlib.cm as cm
 import matplotlib.patches as mpatches
 import numpy as np
 import torch
+import math
 
 from utils import convert_image_to_tensor 
 
@@ -331,3 +332,58 @@ def plot_image_pair(img1, img2, img1_ind: int=None, img2_ind: int = 2, title: st
     plt.tight_layout()
     
     return fig, axs
+
+
+def plot_image_series(imgs: list, title: str=None, n_cols: int=3, dpi: int=50, save_fig: bool=False, file_name: str=None, path: str="temp/"):
+
+    for i, img in enumerate(imgs):
+        if type(img) == torch.Tensor:
+            imgs[i] = K.tensor_to_image(img)
+
+    n = len(imgs)
+    n_rows = math.ceil(n/n_cols)
+
+    H = imgs[0].shape[0]
+    W = imgs[0].shape[1]
+
+    # if n_cols==3:
+    H_factor = math.floor(H/200)
+    W_factor = math.floor(W/200)
+    
+
+    fig, axes = plt.subplots(
+        n_rows,
+        n_cols,
+        figsize=(W_factor * n_cols, H_factor * n_rows),
+        dpi=dpi,
+        sharex=True,
+        sharey=False
+    )
+
+    axes = axes.flatten()
+
+    for i, ax in zip(np.arange(n), axes):
+        ax.set_title(f"Index {i}", fontsize=16)
+        ax.axis('off')
+        if imgs[i] is None:
+            continue
+        ax.imshow(imgs[i])
+        
+
+    # hide unused subplots
+    for ax in axes[n:]:
+        ax.set_visible(False)
+
+    if title is not None:
+        fig.suptitle(f"{title}", fontsize=24)
+
+    # tighten layout to remove empty space
+    fig.tight_layout()
+
+    if save_fig:
+        if file_name is None:
+            file_name = title
+        plt.savefig(f"{path}{file_name}")
+        plt.close()
+    else:
+        plt.show()
