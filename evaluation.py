@@ -21,8 +21,8 @@ warnings.filterwarnings(
 
 
 if __name__ == "__main__":
-    out_file = "test.csv"
-    # out_file = "registration_eval3.csv"
+    # out_file = "results/test.csv"
+    out_file = "results/registration_eval3.csv"
 
     metrics = {'MSE': mse_masked, 'NCC': local_ncc_masked, 'MI': nmi_masked, 'SSIM': ssim_masked, 'IoU': iou, 'Hausdorff': hausdorff}
 
