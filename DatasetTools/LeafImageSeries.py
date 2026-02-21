@@ -524,10 +524,21 @@ class LeafDataset:
         # for i in tqdm(range(len(self.images)), desc="Processing series"):
         for i in tqdm(range(self.n_leaves), desc="Processing series"):
 
-            det_mask_ = np.asarray(self.det_masks[i])
-            det_mask_ = np.where(det_mask_ == 0, det_mask_, det_mask_ + 4)
-            seg_mask_ = np.asarray(self.seg_masks[i])
-            self.symptoms_masks.append(np.where(det_mask_ == 0, seg_mask_, det_mask_))
+            # det_mask_ = np.asarray(self.det_masks[i])
+            # det_mask_ = np.where(det_mask_ == 0, det_mask_, det_mask_ + 4)
+            # seg_mask_ = np.asarray(self.seg_masks[i])
+            # self.symptoms_masks.append(np.where(det_mask_ == 0, seg_mask_, det_mask_))
+            
+            if self.det_masks[i] is not None:
+                det_mask_ = np.asarray(self.det_masks[i])
+                det_mask_ = np.where(det_mask_ == 0, det_mask_, det_mask_ + 4)
+            if self.det_masks[i] is not None and self.seg_masks[i] is not None:
+                seg_mask_ = np.asarray(self.seg_masks[i])
+                self.symptoms_masks.append(np.where(det_mask_ == 0, seg_mask_, det_mask_))
+            elif self.seg_masks[i] is not None:
+                self.symptoms_masks.append(seg_mask_)
+            else:
+                self.symptoms_masks.append(None)
         
         self.available_data.append('symptom_masks')
 
@@ -554,6 +565,12 @@ class LeafDataset:
             _, mh = map(int, np.mean(box, axis=0))
             # target = np.asarray(self.target_images[i])
             symptoms_mask = self.symptoms_masks[i]
+            if symptoms_mask is None:
+                if self.verbose:
+                    print(f"No symptoms mask for index {i}")
+                self.roi_leaf_masks.append(None)
+                self.roi_leaf_images.append(None)
+                continue
 
             # full mask
             full_mask = np.zeros((rows, cols)).astype("float32")
