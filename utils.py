@@ -341,6 +341,49 @@ def invert_list(l: list, last_ind: int, first_ind: int=1):
     # l.reverse()
     # return l[n-1-last_ind: -first_ind]
 
+def group_by_argmax(values: torch.Tensor, groups: torch.Tensor):
+    """
+    Groups the values by group, determines the max for each group and returns the index of those values.
+
+    Args:
+        values: Values of which we want to find the max-per-group
+        group: Tensor indicating which value belongs to which group
+
+    Returns:
+        list of indices of the max value for each group
+    """
+    # map group ids to consecutive values  0..num_unique-1
+    unique_groups, inverse = torch.unique(groups, return_inverse=True)
+    num_ids = len(unique_groups)
+
+    # compute max value per group
+    max_vals = torch.full((num_ids,), float('-inf'), device=values.device)
+    max_vals = max_vals.scatter_reduce(
+        0,
+        inverse,
+        values,
+        reduce="amax",
+        include_self=True
+    )
+
+    # find indices where value is the max
+    is_max_mask = (values == max_vals[inverse])
+
+    idx = torch.arange(len(values), device=values.device) # full list of indices
+    idx_masked = torch.where(is_max_mask, idx, torch.full_like(idx, -1)) # non-max indices are set to -1
+
+    # filter out indices of max per group
+    argmax_idx = torch.full((num_ids,), -1, dtype=torch.long, device=values.device)
+    argmax_idx = argmax_idx.scatter_reduce(
+        0,
+        inverse,
+        idx_masked,
+        reduce="amax",
+        include_self=True
+    )
+    
+    return argmax_idx
+
 
 # ------------- transforms ---------------------------------------
 

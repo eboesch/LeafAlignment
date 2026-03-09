@@ -5,8 +5,11 @@ import kornia.feature as KF
 import numpy as np
 import torch
 import skimage as ski
-from utils import convert_image_to_tensor
+import math
+from sklearn.cluster import KMeans
+from utils import convert_image_to_tensor, group_by_argmax
 from plotting import plot_matches_conf, plot_match_coverage
+
 
 def load_resize_image(img_path: str, H: int=375, W: int=600):
     """
@@ -86,49 +89,36 @@ def loftr_match(img_fix, img_mov, verbose: bool=True, return_n_matches: bool=Fal
         return mkpts0, mkpts1, confidence, inliers
 
 
-def tps_skimage(keypts_fix, keypts_mov, confidence, thrsld, img_mov, warp_moving: bool=True, verbose: bool=False):
-    """
-    Applies TPS to register moving image to fixed image. Keypoints are filtered by confidence.
-
-    Returns: transformed moving image and transform function
-    """
-
-    # kornia and torch expect C x H x W, while skimage expects H x W x C
-    img_mov_reordered = K.tensor_to_image(img_mov)
-
-    img_fix_mks = keypts_fix[confidence > thrsld]
-    img_mov_mks = keypts_mov[confidence > thrsld]
-    if verbose and (len(img_fix_mks) > 500):
-        print("Setting threshold..")
-    while (len(img_fix_mks) > 500):
-        thrsld += (1-thrsld)/5
-        img_fix_mks = keypts_fix[confidence > thrsld]
-        img_mov_mks = keypts_mov[confidence > thrsld]
-    if verbose:
-        print(f"Threshold set to {thrsld}")
-
-    if verbose:
-        print("Estimating TPS transform...")
-    tps = ski.transform.ThinPlateSplineTransform.from_estimate(img_fix_mks, img_mov_mks)
-
-    if warp_moving:
-        if verbose:
-            print("Transforming moving image...")
-        warped = ski.transform.warp(img_mov_reordered, tps) # warp uses inverse transform, i.e. img_mov -> img_fix
-
-        return warped, tps
-    else:
-        return None, tps
-
 def warp_tps(img, tps, verbose=False):
     # kornia and torch expect C x H x W, while skimage expects H x W x C
-    img = K.tensor_to_image(img)
+    if type(img) == torch.Tensor:
+        img = K.tensor_to_image(img)
 
     if verbose:
         print("Transforming moving image...")
     warped = ski.transform.warp(img, tps) # warp uses inverse transform, i.e. img_mov -> img_fix
 
     return convert_image_to_tensor(warped)
+
+def tps_skimage(keypts_fix, keypts_mov, img_mov=None, warp_moving: bool=True, verbose: bool=False):
+    """
+    Applies TPS to register moving image to fixed image. Expects keypoints to be filtered already.
+
+    Returns: transformed moving image and transform function
+    """
+
+    if verbose:
+        print("Estimating TPS transform...")
+    tps = ski.transform.ThinPlateSplineTransform.from_estimate(keypts_fix, keypts_mov)
+
+    if warp_moving:
+        warped = warp_tps(img_mov, tps, verbose=verbose)
+        # warped = ski.transform.warp(img_mov_reordered, tps) # warp uses inverse transform, i.e. img_mov -> img_fix
+
+        return warped, tps
+    else:
+        return None, tps
+
 
 def compose_tps(transforms):
     def composed(coords):
@@ -162,7 +152,7 @@ def register_loftr_tps(img_fixed, img_moving, threshold=0.5, mask_moving: torch.
         fig.show()
     
     if n_matches['conf_matches'] > 3:
-        warped_moving_img, tps = tps_skimage(mkpts0, mkpts1, confidence, threshold, img_moving, warp_moving=warp_moving, verbose=verbose)
+        warped_moving_img, tps = tps_skimage_confidence(mkpts0, mkpts1, confidence, threshold, img_moving, warp_moving=warp_moving, verbose=verbose)
         warped_moving_img = convert_image_to_tensor(warped_moving_img)
         if not warp_moving:
             return tps
@@ -188,6 +178,154 @@ def register_loftr_tps(img_fixed, img_moving, threshold=0.5, mask_moving: torch.
             return warped_moving_img, warped_moving_mask
         else:
             return warped_moving_img
+
+
+
+# Filtering -------------------------------
+
+def tps_skimage_confidence(keypts_fix, keypts_mov, confidence, thrsld, img_mov, warp_moving: bool=True, verbose: bool=False):
+    """
+    Applies TPS to register moving image to fixed image. Keypoints are filtered by confidence.
+
+    Returns: transformed moving image and transform function
+    """
+
+    # kornia and torch expect C x H x W, while skimage expects H x W x C
+    # img_mov_reordered = K.tensor_to_image(img_mov)
+
+    img_fix_mks = keypts_fix[confidence > thrsld]
+    img_mov_mks = keypts_mov[confidence > thrsld]
+    if verbose and (len(img_fix_mks) > 500):
+        print("Setting threshold..")
+    while (len(img_fix_mks) > 500):
+        thrsld += (1-thrsld)/5
+        img_fix_mks = keypts_fix[confidence > thrsld]
+        img_mov_mks = keypts_mov[confidence > thrsld]
+    if verbose:
+        print(f"Threshold set to {thrsld}")
+
+    # if verbose:
+    #     print("Estimating TPS transform...")
+    # tps = ski.transform.ThinPlateSplineTransform.from_estimate(img_fix_mks, img_mov_mks)
+
+    return tps_skimage(img_fix_mks, img_mov_mks, img_mov=img_mov, warp_moving=warp_moving, verbose=verbose)
+
+    # if warp_moving:
+    #     if verbose:
+    #         print("Transforming moving image...")
+    #     warped = ski.transform.warp(img_mov_reordered, tps) # warp uses inverse transform, i.e. img_mov -> img_fix
+
+    #     return warped, tps
+    # else:
+    #     return None, tps
+
+def filter_matches_by_grid(mkpts0, mkpts1, confidence, img_width, threshold: float=0.5, cell_size: int=50):
+    num_cell_per_row =  math.ceil(img_width / cell_size)
+
+    cell_x = mkpts0[:,0] // cell_size
+    cell_y = mkpts0[:,1] // cell_size
+    cell_id = cell_y * num_cell_per_row + cell_x
+
+    # get indices of max per cell
+    cell_max_indices = group_by_argmax(confidence, cell_id.long())
+
+    cell_max_coord0 = mkpts0[cell_max_indices, :]
+    cell_max_coord1 = mkpts1[cell_max_indices, :]
+
+    if threshold is not None:
+        cell_max_coord0 = cell_max_coord0[confidence[cell_max_indices] > threshold]
+        cell_max_coord1 = cell_max_coord1[confidence[cell_max_indices] > threshold]
+    return cell_max_coord0, cell_max_coord1
+
+
+def filter_matches_by_cluster(mkpts0, mkpts1, confidence, threshold: float=0.5, n_clusters: int=400):
+
+    # only consider above threshold
+    mkpts0_th = mkpts0[confidence > threshold]
+    mkpts1_th = mkpts1[confidence > threshold]
+
+    # cluster remaining matches
+    kmeans = KMeans(n_clusters=n_clusters, random_state=0, n_init="auto").fit(mkpts0_th)
+    
+    # get indices of max per cell
+    cluster_max_indices = group_by_argmax(confidence[confidence>threshold], torch.Tensor(kmeans.labels_))
+    cluster_max_coord0 = mkpts0_th[cluster_max_indices, :]
+    cluster_max_coord1 = mkpts1_th[cluster_max_indices, :]
+
+    return cluster_max_coord0, cluster_max_coord1
+
+
+
+def filter_matches_by_min_distance(
+    mkpts0,
+    mkpts1,
+    confidence,
+    min_dist=20.0,
+    max_points=None,
+    threshold=0.5,
+):
+    """
+    Greedy minimum-distance filtering for LoFTR matches.
+
+    Args:
+        kpts0: (N, 2) array/tensor of keypoints in image 0
+        kpts1: (N, 2) array/tensor of keypoints in image 1
+        confidence: (N,) match confidence
+        min_dist: minimum pixel spacing between selected keypoints
+        max_points: optional cap on number of matches
+
+    Returns:
+        filtered_kpts0, filtered_kpts1, filtered_conf
+    """
+
+    # Convert to numpy if torch
+    if type(mkpts0) == torch.Tensor:
+        mkpts0 = mkpts0.cpu().numpy()
+    if type(mkpts1) == torch.Tensor:
+        mkpts1 = mkpts1.cpu().numpy()
+    if type(confidence) == torch.Tensor:
+        confidence = confidence.cpu().numpy()
+
+    # Sort by confidence descending
+    idxs = np.argsort(-confidence)
+
+    selected = []
+    selected_points = []
+    n_skip = 0
+
+    for idx in idxs:
+        if confidence[idx] < threshold:
+            break
+
+        pt = mkpts0[idx]
+
+        if len(selected_points) == 0:
+            # first point can just add to list
+            selected.append(idx)
+            selected_points.append(pt)
+        else:
+            # compute distances to existing points
+            dists = np.linalg.norm(np.array(selected_points) - pt, axis=1)
+
+            # ensure minimum distance isn't violated
+            if np.min(dists) >= min_dist:
+                selected.append(idx)
+                selected_points.append(pt)
+            else:
+                n_skip += 1
+
+        if max_points is not None and len(selected) >= max_points:
+            # print("max points reached")
+            break
+
+    selected = np.array(selected)
+    # print(f"points skipped: {n_skip}")
+
+    return (
+        mkpts0[selected],
+        mkpts1[selected],
+        # confidence[selected],
+    )
 
     
 
