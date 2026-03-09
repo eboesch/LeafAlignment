@@ -4,14 +4,17 @@ import kornia as K
 import numpy as np
 import torch
 from tqdm import tqdm
+from skimage.transform import AffineTransform
+
 # from utils import crop_img, convert_img_tensor_to_numpy, crop_coords_zero_borders, undo_rotation
 # from plotting import plot_matches, plot_matches_conf, plot_match_coverage
 # from masking import keypoints_roi_to_image, scale_image, mask_leaf, erode_crop_leaf, crop_ROI_erode_leaf, 
 from utils import convert_image_to_tensor, match_sizes_resize, match_sizes_resize_batch, invert_list
 from masking import fetch_image_mask_pair
-from loftr import loftr_match, tps_skimage, register_loftr_tps, warp_tps, compose_tps
+from loftr import loftr_match, tps_skimage, tps_skimage_confidence, register_loftr_tps, warp_tps, compose_tps, filter_matches_by_min_distance
 from plotting import plot_image_pair, plot_overlay
 from DatasetTools.LeafImageSeries import LeafDataset
+
 
 
 def fetch_preregistered_leaf(leaf, ind):
@@ -196,7 +199,18 @@ def register_leaf_seq_sequential(leaf: LeafDataset, img_scale: str="full", pre_r
         #     tps = None
         
         # get TPS transform from current image to previous
-        tps[ind] = register_loftr_tps(imgs[ind-1], imgs[ind], threshold=0.5, verbose=False, plot_loftr_matches=False, warp_moving=False, return_tps=True)
+        if imgs[ind] is None:
+            registered_imgs.append(None)
+            tps[ind] = AffineTransform() # identity transform
+            if return_masks:
+                registered_masks.append(None)
+            continue
+
+        j = 1
+        while imgs[ind-j] is None:
+            j += 1
+
+        tps[ind] = register_loftr_tps(imgs[ind-j], imgs[ind], threshold=0.5, verbose=False, plot_loftr_matches=False, warp_moving=False, return_tps=True)
         
         # if ind > 1:
         #     tps_chain = [tps[ind], tps[ind-1]]
@@ -210,6 +224,64 @@ def register_leaf_seq_sequential(leaf: LeafDataset, img_scale: str="full", pre_r
 
         # warp images
         registered_imgs.append( warp_tps(imgs[ind], coord_map, verbose=True) )
+        if return_masks:
+            # converting mask to bool makes warp use nearest-neighbor interpolation
+            registered_masks.append( warp_tps(masks[ind].bool(), coord_map, verbose=False) )
+
+    if return_masks:
+        return registered_imgs, registered_masks
+    else:
+        return registered_imgs
+
+
+def register_leaf_seq_sequential_filtered(leaf: LeafDataset, img_scale: str="full", pre_rotate: bool=False, erase_markers: bool=True, return_masks: bool=True, use_scaling_erosion: bool=False):
+    
+    # retrieve images
+    imgs = []
+    if return_masks:
+        masks = []
+
+    for ind in range(leaf.n_leaves):
+        img, mask = img_moving, mask_moving = fetch_image_mask_pair(leaf, ind, img_scale=img_scale, pre_rotate=pre_rotate, erase_markers=erase_markers, use_scaling_erosion=use_scaling_erosion)
+        imgs.append(img)
+        if return_masks:
+            masks.append(mask)
+
+    # resize
+    imgs, masks = match_sizes_resize_batch(imgs, masks)
+    
+    tps = [None]*leaf.n_leaves
+    registered_imgs = [imgs[0]]
+    if return_masks:
+        registered_masks = [masks[0]]
+    moving_indices = np.arange(1, leaf.n_leaves)
+    for ind in tqdm(moving_indices, "Registering Filtered Sequentially"):
+
+        if imgs[ind] is None:
+            registered_imgs.append(None)
+            tps[ind] = AffineTransform() # identity transform
+            if return_masks:
+                registered_masks.append(None)
+            continue
+
+        j = 1
+        while imgs[ind-j] is None:
+            j += 1
+        
+        mkpts0, mkpts1, confidence, _ = loftr_match(imgs[ind-j], imgs[ind], verbose=False, return_n_matches=False)
+        
+        min_dist = 80
+        max_points=None
+        threshold=0.5
+        dist_matches_fix, dist_matches_mov = filter_matches_by_min_distance(mkpts0, mkpts1, confidence, min_dist=min_dist, max_points=max_points, threshold=threshold)
+        _, tps_func = tps_skimage(dist_matches_fix, dist_matches_mov, warp_moving=False, verbose=False)
+        tps[ind] = tps_func
+
+        tps_chain = invert_list(tps, ind) # get inverted list of tps transforms
+        coord_map = compose_tps(tps_chain)
+
+        # warp images
+        registered_imgs.append( warp_tps(imgs[ind], coord_map, verbose=False) )
         if return_masks:
             # converting mask to bool makes warp use nearest-neighbor interpolation
             registered_masks.append( warp_tps(masks[ind].bool(), coord_map, verbose=False) )
@@ -371,6 +443,8 @@ def fetch_registered_image_mask_seq(leaf, registration_method, leaf_style, plot_
             imgs, masks = register_leaf_seq_semi_sequential(leaf, **leaf_kwargs)
         elif registration_method == "LoFTR + TPS Sequential":
             imgs, masks = register_leaf_seq_sequential(leaf, **leaf_kwargs)
+        elif registration_method == "LoFTR + TPS Filtered Sequential":
+            imgs, masks = register_leaf_seq_sequential_filtered(leaf, **leaf_kwargs)
         else:
             raise ValueError(f'Unknown registration method {registration_method}')
         
