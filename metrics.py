@@ -55,6 +55,30 @@ def mse_masked(img1, img1_mask, img2, img2_mask, reduction="mean", mask_mode='bo
     # mse_loss = torch.nn.MSELoss(reduction=reduction)
     return torch.nn.functional.mse_loss(img1, img2, reduction=reduction, weight=mask)
 
+def mape(img_true, img_pred, eps: float=1e-13):
+    img_true = convert_image_to_tensor(img_true)
+    img_pred = convert_image_to_tensor(img_pred)
+
+    return torch.mean(torch.abs((img_true - img_pred) / (img_true + eps))) * 100
+
+def mape_masked(img_true, img_true_mask, img_pred, img_pred_mask, eps=1e-13, mask_mode='both'):
+    img_true = convert_image_to_tensor(img_true)
+    img_pred = convert_image_to_tensor(img_pred)
+    img_true_mask = convert_image_to_tensor(img_true_mask)
+    img_pred_mask = convert_image_to_tensor(img_pred_mask)
+
+
+    if mask_mode == 'either':
+        # consider all pixels where at least one image is valid
+        mask = torch.logical_or(img_true_mask, img_pred_mask)
+    elif mask_mode == 'both':
+        # consider all pixels where both images are valid
+        mask = torch.logical_and(img_true_mask, img_pred_mask)
+    else:
+        raise ValueError(f"Unknown mask_mode {mask_mode}. Expected 'either' or 'both'.")
+
+    return weighted_average(torch.abs((img_true - img_pred) / (img_true + eps)), mask) * 100
+
 def ncc(img1, img2, reduction='mean'):
     """
     Compute Normalized Cross-Correlation (NCC) between two images.
