@@ -289,6 +289,8 @@ def convert_image_to_tensor(img):
     if img is None:
         return img
     elif type(img) == torch.Tensor:
+        if img.dim == 3:
+            img.unsqueeze(0)
         return img
     elif type(img) == np.ndarray:
         img = K.image_to_tensor(img)
@@ -407,7 +409,7 @@ def adjust_color(img, brightness=0.0, contrast=0.0, saturation=1.0):
     img = K.enhance.adjust_brightness(img, brightness)
     img = K.enhance.adjust_contrast(img, contrast+1e-6)
     img = K.enhance.adjust_saturation(img, saturation)
-    K.enhance.adjust_gamma()
+    # K.enhance.adjust_gamma()
     return img
 
 def gaussian_blur(img, kernel_size=0.0, sigma=0.0):

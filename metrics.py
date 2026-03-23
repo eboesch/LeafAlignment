@@ -7,6 +7,7 @@ from skimage.metrics import structural_similarity
 from skimage.metrics import normalized_mutual_information
 from monai.metrics import compute_hausdorff_distance
 from utils import convert_image_to_tensor, convert_img_tensor_to_numpy, weighted_average
+from loftr import warp_tps_points_torch
 
 def iou(img1, mask1, img2, mask2):
     mask1 = convert_image_to_tensor(mask1).long()
@@ -570,3 +571,23 @@ def ssim_masked(img1, img1_mask, img2, img2_mask, window_size=11, reduction='mea
         return ssim_map
     else:
         raise ValueError("reduction must be either 'mean' or 'none'")
+
+def tre(kpts_fix, kpts_mov, tps, reduction: str='mean'):
+    kpts_fix_warped = warp_tps_points_torch(tps, kpts_fix)
+    mse_loss = torch.nn.MSELoss(reduction=reduction)
+    return mse_loss(kpts_mov, kpts_fix_warped)
+
+
+def batch_eval_metrics(img1, img1_mask, img2, img2_mask, metrics: dict):
+    eval_res = {}
+    for metric_name, metric_func in metrics.items():
+        val = metric_func(img1, img1_mask, img2, img2_mask)
+        eval_res.update({metric_name: val.item()})
+    return eval_res
+
+def batch_eval_metrics_unmasked(img1, img2, metrics: dict):
+    eval_res = {}
+    for metric_name, metric_func in metrics.items():
+        val = metric_func(img1, img2)
+        eval_res.update({metric_name: val.item()})
+    return eval_res

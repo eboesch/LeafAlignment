@@ -254,7 +254,7 @@ def plot_match_coverage(img_fix, keypts_fix, img_mov, keypts_mov, confidence):
     return fig, (ax1, ax2)
 
 
-def plot_img_transform(img_mov, img_mov_warped, plot_keypts: bool=False, keypts_mov=None, keypts_warped=None):
+def plot_img_transform(img_mov, img_mov_warped, plot_keypts: bool=False, keypts_mov=None, keypts_warped=None, title: str=None):
     """
     plots original moving image and transformed moving image
     """
@@ -280,6 +280,10 @@ def plot_img_transform(img_mov, img_mov_warped, plot_keypts: bool=False, keypts_
         axs[1].scatter(keypts_warped[:, 0], keypts_warped[:, 1], s=2, color='cyan')
     axs[1].set_title("Transformed Moving Image")
     axs[1].axis('off')
+    if title is not None:
+        fig.suptitle(title, fontsize=20, y=0.7)
+
+    plt.tight_layout()
 
     return fig, axs
 
@@ -336,15 +340,17 @@ def plot_image_pair(img1, img2, img1_ind: int=None, img2_ind: int = 2, title: st
 
 def plot_image_series(imgs: list, title: str=None, n_cols: int=3, dpi: int=50, save_fig: bool=False, file_name: str=None, path: str="temp/"):
 
-    for i, img in enumerate(imgs):
-        if type(img) == torch.Tensor:
-            imgs[i] = K.tensor_to_image(img)
-
     n = len(imgs)
     n_rows = math.ceil(n/n_cols)
+    
+    imgs_np = [None]*n
+    for i, img in enumerate(imgs):
+        if type(img) == torch.Tensor:
+            imgs_np[i] = K.tensor_to_image(img)
 
-    H = imgs[0].shape[0]
-    W = imgs[0].shape[1]
+    
+    H = imgs_np[0].shape[0]
+    W = imgs_np[0].shape[1]
 
     # if n_cols==3:
     H_factor = math.floor(H/200)
@@ -365,9 +371,9 @@ def plot_image_series(imgs: list, title: str=None, n_cols: int=3, dpi: int=50, s
     for i, ax in zip(np.arange(n), axes):
         ax.set_title(f"Index {i}", fontsize=16)
         ax.axis('off')
-        if imgs[i] is None:
+        if imgs_np[i] is None:
             continue
-        ax.imshow(imgs[i])
+        ax.imshow(imgs_np[i])
         
 
     # hide unused subplots
