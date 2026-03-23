@@ -7,6 +7,7 @@ import torch
 import skimage as ski
 import math
 from sklearn.cluster import KMeans
+from torch_tps import ThinPlateSpline
 from utils import convert_image_to_tensor, group_by_argmax
 from plotting import plot_matches_conf, plot_match_coverage
 
@@ -89,7 +90,131 @@ def loftr_match(img_fix, img_mov, verbose: bool=True, return_n_matches: bool=Fal
         return mkpts0, mkpts1, confidence, inliers
 
 
-def warp_tps(img, tps, verbose=False):
+
+# -------------------------------- torch tps -----------------------------------------
+
+def fit_tps_torch(target_keypts, moving_keypts, alpha=0.5):
+    """
+    keypoints have format (x,y)
+    """
+
+    target_keypts = target_keypts[..., [1, 0]] # meshgrid builder expects (y,x) format
+    moving_keypts = moving_keypts[..., [1, 0]]
+
+    # Fit the thin plate spline from output to input
+    tps = ThinPlateSpline(alpha)
+    tps.fit(target_keypts, moving_keypts)
+
+    return tps
+
+def warp_tps_points_torch(tps, points):
+    points = points[..., [1, 0]] # tps was trained in (y,x) format
+    return tps.transform(points)[..., [1, 0]] # return output back in (x,y) format
+
+def warp_tps_torch(tps_list: list, image, interpolation_mode='bilinear'):
+    image = convert_image_to_tensor(image)
+    height = image.shape[2]
+    width = image.shape[3]
+    size = torch.tensor((height, width))
+
+    # create pixel index vectors
+    i = torch.arange(height, dtype=torch.float32)
+    j = torch.arange(width, dtype=torch.float32)
+
+    # create row/col coordinate matrices
+    ii, jj = torch.meshgrid(i, j, indexing="ij")
+    # combine into coordinate grid
+    output_indices = torch.cat((ii[..., None], jj[..., None]), dim=-1)  # (H,W,2)
+    # flatten grid -> tps expects list
+    input_indices = output_indices.reshape(-1, 2) # (H*W, 2)
+
+
+    if not isinstance(tps_list, list):
+        tps_list = [tps_list]
+    # apply tps transforms
+    for tps in tps_list:
+        if tps is not None:
+            input_indices = tps.transform(input_indices)
+
+    # reshape back into a grid
+    input_indices = input_indices.reshape(height, width, 2)
+
+    # normalize to [-1,1]
+    grid = 2 * input_indices / size - 1
+    grid = torch.flip(grid, (-1,)) # Grid sample works with x,y coordinates, not row, col
+
+    # grid_x = (2 * x + 1) / W - 1
+    # grid_y = (2 * y + 1) / H - 1
+    # grid = torch.stack((grid_x, grid_y), dim=-1)
+    return torch.nn.functional.grid_sample(image, grid[None], mode=interpolation_mode, align_corners=False)
+
+def torch_tps(target_keypts, moving_keypts, moving_img, alpha: float=0.5, verbose: bool=False):
+    if verbose:
+        print("Fitting TPS...")
+    tps = fit_tps_torch(target_keypts, moving_keypts, alpha=0.5)
+    if verbose:
+        print("Warping Moving Image...")
+    warped = warp_tps_torch(tps, moving_img)
+    return warped
+
+def register_loftr_tps(img_fixed, img_moving, threshold: float=0.5, smoothing: float=0.5, mask_moving: torch.Tensor=None, verbose: bool=False, plot_loftr_matches: bool=False, return_tps: bool=False):
+    """
+    uses loftr to detect matches between the fixed and moving image, filters the matches by confidence, then uses TPS to transform the moving image
+    if a mask of the moving image is provided, it is also warped.
+    optionally the TPS transform can be returned
+    """
+    if img_fixed is None or img_moving is None:
+        if return_tps:
+            if mask_moving is not None:
+                return None, None, None
+            else:
+                return None, None
+        else:
+            if mask_moving is not None:
+                return None, None
+            else:
+                return None
+
+    mkpts0, mkpts1, confidence, _, n_matches = loftr_match(img_fixed, img_moving, verbose=verbose, return_n_matches=True)
+
+    if plot_loftr_matches:
+        fig, ax = plot_matches_conf(img_fixed, mkpts0, img_moving, mkpts1, confidence, N_show=50, vertical=True)
+        fig.show()
+        fig, axs = plot_match_coverage(img_fixed, mkpts0, img_moving, mkpts1, confidence)
+        fig.show()
+    
+    if n_matches['conf_matches'] > 3:
+        kpts0, kpts1 = filter_matches_by_confidence(mkpts0, mkpts1, confidence, threshold, verbose=verbose)
+        if verbose:
+            print("Fitting TPS...")
+        tps = fit_tps_torch(kpts0, kpts1, alpha=smoothing)
+        if verbose:
+            print("Warping Moving Image...")
+        warped_moving_img = warp_tps_torch(tps, img_moving)
+        if mask_moving is not None:
+            if verbose:
+                print("Warping Moving Mask...")
+            warped_moving_mask = warp_tps_torch(tps, mask_moving, interpolation_mode='nearest')
+    else:
+        print("No enough matches for TPS found")
+        warped_moving_img = None
+        warped_moving_mask = None
+        tps = None
+    
+    if return_tps:
+        if mask_moving is not None:
+            return warped_moving_img, warped_moving_mask, tps
+        else:
+            return warped_moving_img, tps
+    else:
+        if mask_moving is not None:
+            return warped_moving_img, warped_moving_mask
+        else:
+            return warped_moving_img
+
+# ------------------- skimage tps ----------------------------------------------------------
+
+def warp_tps_skimage(img, tps, verbose=False):
     # kornia and torch expect C x H x W, while skimage expects H x W x C
     if type(img) == torch.Tensor:
         img = K.tensor_to_image(img)
@@ -112,7 +237,7 @@ def tps_skimage(keypts_fix, keypts_mov, img_mov=None, warp_moving: bool=True, ve
     tps = ski.transform.ThinPlateSplineTransform.from_estimate(keypts_fix, keypts_mov)
 
     if warp_moving:
-        warped = warp_tps(img_mov, tps, verbose=verbose)
+        warped = warp_tps_skimage(img_mov, tps, verbose=verbose)
         # warped = ski.transform.warp(img_mov_reordered, tps) # warp uses inverse transform, i.e. img_mov -> img_fix
 
         return warped, tps
@@ -127,7 +252,7 @@ def compose_tps(transforms):
         return coords
     return composed
 
-def register_loftr_tps(img_fixed, img_moving, threshold=0.5, mask_moving: torch.Tensor=None, verbose: bool=False, plot_loftr_matches: bool=False, warp_moving: bool=True, return_tps: bool=False):
+def register_loftr_tps_skimage(img_fixed, img_moving, threshold=0.5, mask_moving: torch.Tensor=None, verbose: bool=False, plot_loftr_matches: bool=False, warp_moving: bool=True, return_tps: bool=False):
     """
     if `warp_moving` is False, the moving image is not warped and only the tps transform is returned
     """
@@ -158,7 +283,7 @@ def register_loftr_tps(img_fixed, img_moving, threshold=0.5, mask_moving: torch.
             return tps
         elif mask_moving is not None:
             # converting mask to bool makes warp use nearest-neighbor interpolation
-            warped_moving_mask = warp_tps(mask_moving.bool(), tps, verbose)
+            warped_moving_mask = warp_tps_skimage(mask_moving.bool(), tps, verbose)
             warped_moving_mask = convert_image_to_tensor(warped_moving_mask)
     else:
         print("No enough matches for TPS found")
@@ -219,6 +344,21 @@ def tps_skimage_confidence(keypts_fix, keypts_mov, confidence, thrsld, img_mov, 
     # else:
     #     return None, tps
 
+def filter_matches_by_confidence(mkpts0, mkpts1, confidence, threshold: float=0.5, n_max: int=500, verbose: bool=False):
+    img_fix_mks = mkpts0[confidence > threshold]
+    img_mov_mks = mkpts1[confidence > threshold]
+
+    if verbose and (len(img_fix_mks) > n_max):
+        print("Setting threshold..")
+    while (len(img_fix_mks) > n_max):
+        threshold += (1-threshold)/5
+        img_fix_mks = mkpts0[confidence > threshold]
+        img_mov_mks = mkpts1[confidence > threshold]
+    if verbose:
+        print(f"Threshold set to {threshold}")
+
+    return img_fix_mks, img_mov_mks
+
 def filter_matches_by_grid(mkpts0, mkpts1, confidence, img_width, threshold: float=0.5, cell_size: int=50):
     num_cell_per_row =  math.ceil(img_width / cell_size)
 
@@ -237,7 +377,6 @@ def filter_matches_by_grid(mkpts0, mkpts1, confidence, img_width, threshold: flo
         cell_max_coord1 = cell_max_coord1[confidence[cell_max_indices] > threshold]
     return cell_max_coord0, cell_max_coord1
 
-
 def filter_matches_by_cluster(mkpts0, mkpts1, confidence, threshold: float=0.5, n_clusters: int=400):
 
     # only consider above threshold
@@ -254,16 +393,7 @@ def filter_matches_by_cluster(mkpts0, mkpts1, confidence, threshold: float=0.5, 
 
     return cluster_max_coord0, cluster_max_coord1
 
-
-
-def filter_matches_by_min_distance(
-    mkpts0,
-    mkpts1,
-    confidence,
-    min_dist=20.0,
-    max_points=None,
-    threshold=0.5,
-):
+def filter_matches_by_min_distance(mkpts0, mkpts1, confidence, min_dist: float=20.0, max_points: int=None, threshold: float=0.5,):
     """
     Greedy minimum-distance filtering for LoFTR matches.
 
@@ -321,11 +451,7 @@ def filter_matches_by_min_distance(
     selected = np.array(selected)
     # print(f"points skipped: {n_skip}")
 
-    return (
-        mkpts0[selected],
-        mkpts1[selected],
-        # confidence[selected],
-    )
+    return torch.from_numpy(mkpts0[selected]), torch.from_numpy(mkpts1[selected]), #torch.from_numpy(confidence[selected])   )
 
     
 
