@@ -151,7 +151,7 @@ def warp_tps_torch(tps_list: list, image, interpolation_mode='bilinear'):
 def torch_tps(target_keypts, moving_keypts, moving_img, alpha: float=0.5, verbose: bool=False):
     if verbose:
         print("Fitting TPS...")
-    tps = fit_tps_torch(target_keypts, moving_keypts, alpha=0.5)
+    tps = fit_tps_torch(target_keypts, moving_keypts, alpha=alpha)
     if verbose:
         print("Warping Moving Image...")
     warped = warp_tps_torch(tps, moving_img)
