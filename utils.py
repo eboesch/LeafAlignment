@@ -459,3 +459,271 @@ def transform_img(img, transform_name, magnitude):
     return img
 
 
+def get_affine_transform(center, rot_angle_deg=0, tx=0, ty=0, scale=1.0, B=1, device='cpu', dtype=torch.float32):
+    angle = torch.tensor([rot_angle_deg], dtype=dtype, device=device).repeat(B)
+    scale = torch.tensor([scale, scale], dtype=dtype, device=device).repeat(B,1)
+    translation = torch.tensor([[tx, ty]], dtype=dtype, device=device).repeat(B,1)
+    return K.geometry.transform.get_affine_matrix2d(translation, center, scale, angle)
+
+def affine_warp_points(points, M):
+
+    return K.geometry.linalg.transform_points(M, points)
+
+def affine_warp_image(img, matrix, output_size, interpolation="bilinear"):
+
+    return K.geometry.transform.warp_affine(img, matrix[:,:2,:], dsize=output_size, mode=interpolation)
+
+def compute_transformed_bounds(matrix, H, W):
+    B = matrix.shape[0]
+    device = matrix.device
+
+    corners = torch.tensor(
+        [[0, 0], [W, 0], [W, H], [0, H]],
+        dtype=torch.float32,
+        device=device,
+    ).unsqueeze(0).repeat(B, 1, 1)  # (B,4,2)
+
+    warped_corners = affine_warp_points(corners, matrix)
+
+    xmin = warped_corners[..., 0].min(dim=1).values
+    ymin = warped_corners[..., 1].min(dim=1).values
+    xmax = warped_corners[..., 0].max(dim=1).values
+    ymax = warped_corners[..., 1].max(dim=1).values
+
+    return xmin, ymin, xmax, ymax
+
+def expand_affine_from_corners(matrix, H, W):
+    xmin, ymin, xmax, ymax = compute_transformed_bounds(matrix, H, W)
+
+    new_W = torch.ceil(xmax - xmin).to(torch.int64)
+    new_H = torch.ceil(ymax - ymin).to(torch.int64)
+
+    # translation to shift into positive canvas
+    shift = torch.zeros_like(matrix)
+    shift[:, 0, 2] = -xmin
+    shift[:, 1, 2] = -ymin
+    shift[:, 2, 2] = 1.0
+
+    B = matrix.shape[0]
+    shift = torch.eye(3, device=matrix.device, dtype=matrix.dtype).unsqueeze(0).repeat(B, 1, 1)
+    shift[:, 0, 2] = -xmin
+    shift[:, 1, 2] = -ymin
+
+    matrix_new = shift @ matrix
+
+    return matrix_new, new_H, new_W
+
+def extract_mask_boundary(mask):
+    """
+    mask: (B,1,H,W)
+    returns: list of (Ni,2) tensors
+    """
+    B = mask.shape[0]
+    boundaries = []
+
+    # simple morphological gradient
+    kernel = torch.ones(3, 3, device=mask.device)
+
+    eroded = K.morphology.erosion(mask.float(), kernel)
+    boundary = mask - eroded  # edges
+
+    for b in range(B):
+        ys, xs = torch.where(boundary[b, 0] > 0)
+        pts = torch.stack([xs, ys], dim=1).float()
+        boundaries.append(pts)
+
+    return boundaries
+
+def subsample_points(points, max_points=500):
+    if points.shape[0] <= max_points:
+        return points
+    idx = torch.randperm(points.shape[0], device=points.device)[:max_points]
+    return points[idx]
+
+def expand_affine_from_contour(A, mask):
+    B = A.shape[0]
+    device = A.device
+    dtype = A.dtype
+
+    contours = extract_mask_boundary(mask)
+
+    xmin_list, ymin_list = [], []
+    xmax_list, ymax_list = [], []
+
+    for b in range(B):
+        # pts = subsample_points(contours[b])  # (N,2)
+        pts = contours[b]
+
+        pts = pts.unsqueeze(0)  # (1,N,2)
+        Ab = A[b:b+1]
+
+        # warp points according to transformation
+        warped = K.geometry.linalg.transform_points(Ab, pts)[0]
+
+        # save min/max in x/y dimension
+        xmin_list.append(warped[:, 0].min())
+        ymin_list.append(warped[:, 1].min())
+        xmax_list.append(warped[:, 0].max())
+        ymax_list.append(warped[:, 1].max())
+
+    xmin = torch.stack(xmin_list)
+    ymin = torch.stack(ymin_list)
+    xmax = torch.stack(xmax_list)
+    ymax = torch.stack(ymax_list)
+
+    # compute height and width after transformation
+    new_W = torch.ceil(xmax - xmin).to(torch.int64)
+    new_H = torch.ceil(ymax - ymin).to(torch.int64)
+
+    # create proper translation
+    shift = torch.eye(3, device=device, dtype=dtype).unsqueeze(0).repeat(B, 1, 1)
+    shift[:, 0, 2] = -xmin
+    shift[:, 1, 2] = -ymin
+
+    A_new = shift @ A # add translation to affine warp
+
+    return A_new, new_H, new_W
+
+def expand_affine_from_joint_contour(A, masks):
+    """
+    A: (B,3,3)
+    masks: list of masks [(B,1,H,W), ...]
+
+    returns xmin, ymin, xmax, ymax (B,)
+    """
+    B = A.shape[0]
+    device = A.device
+    dtype = A.dtype
+
+    xmin_all, ymin_all = [], []
+    xmax_all, ymax_all = [], []
+
+    # collect all ROI points per batch
+    pts_per_batch = [[] for _ in range(B)]
+
+    for mask in masks:
+        pts_list = extract_mask_boundary(mask)
+        for b in range(B):
+            pts_per_batch[b].append(pts_list[b])
+
+    for b in range(B):
+        pts = torch.cat(pts_per_batch[b], dim=0)  # union of ROIs
+
+        pts = pts.unsqueeze(0)  # (1,N,2)
+        warped = K.geometry.linalg.transform_points(A[b:b+1], pts)[0]
+
+        # save min/max in x/y dimension
+        xmin_all.append(warped[:, 0].min() - 0.5)
+        ymin_all.append(warped[:, 1].min() - 0.5)
+        xmax_all.append(warped[:, 0].max() + 0.5)
+        ymax_all.append(warped[:, 1].max() + 0.5)
+
+    xmin = torch.stack(xmin_all)
+    ymin = torch.stack(ymin_all)
+    xmax = torch.stack(xmax_all)
+    ymax = torch.stack(ymax_all)
+
+    # compute height and width after transformation
+    new_W = torch.ceil(xmax - xmin).to(torch.int64)
+    new_H = torch.ceil(ymax - ymin).to(torch.int64)
+
+
+    # create proper translation
+    shift = torch.eye(3, device=device, dtype=dtype).unsqueeze(0).repeat(B, 1, 1)
+    shift[:, 0, 2] = -xmin
+    shift[:, 1, 2] = -ymin
+
+    A_new = shift @ A # add translation to affine warp
+
+    return A_new, new_H, new_W
+
+# def affine_warp_expand(img, mask: torch.Tensor=None, pts: torch.Tensor=None, rot_angle_deg=0, fx=0, fy=0, scale=1.0):
+#     # add batch dim if necessary
+#     if img.dim() == 3:
+#         img = img.unsqueeze(0)
+    
+#     B,C,H,W = img.shape
+#     device = img.device
+#     tx = W*fx/100
+#     ty = H*fy/100
+#     angle = torch.tensor([rot_angle_deg], dtype=img.dtype, device=img.device).repeat(B)
+#     scale = torch.tensor([scale, scale], dtype=img.dtype, device=img.device).repeat(B,1)
+#     center = torch.tensor([[img.shape[-1]/2, img.shape[-2]/2]], dtype=img.dtype, device=img.device).repeat(B,1)
+#     translation = torch.tensor([[tx, ty]], dtype=img.dtype, device=img.device).repeat(B,1)
+#     matrix = K.geometry.transform.get_affine_matrix2d(translation, center, scale, angle)
+
+
+#     if mask is not None:
+#         matrix, new_H, new_W = expand_affine_from_contour(matrix, mask)
+#     else:
+#         matrix, new_H, new_W = expand_affine_from_corners(matrix, H, W)
+#     output_size = (new_H,new_W)
+
+#     img_warped = affine_warp_image(img, matrix, output_size) #K.geometry.transform.warp_affine(img, matrix[:,:2,:], dsize=output_size)
+#     out_dict = {"img": img_warped}
+#     if mask is not None:
+#         mask_warped = affine_warp_image(mask, matrix, output_size, interpolation="nearest")
+#         out_dict.update({"mask": mask_warped})
+
+#     if pts is not None:
+#         pts_warped = affine_warp_points(pts, matrix)
+#         out_dict.update({"pts": pts_warped})
+
+#     return out_dict
+
+def affine_warp_expand(imgs: torch.Tensor, masks: torch.Tensor=None, pts_list: List[torch.Tensor]=None, rot_angle_deg=0, fx=0, fy=0, scale=1.0, return_matrix: bool=False):
+    # add batch dim if necessary
+    if type(imgs) == torch.Tensor:
+        imgs = [imgs]
+    for img in imgs:
+        if img.dim() == 3:
+            img = img.unsqueeze(0)
+    if type(masks) == torch.Tensor:
+        masks = [masks]
+    
+    B,C,H,W = imgs[0].shape
+    device = imgs[0].device
+    dtype = imgs[0].dtype
+    tx = W*fx/100
+    ty = H*fy/100
+    angle = torch.tensor([rot_angle_deg], dtype=dtype, device=device).repeat(B)
+    scale = torch.tensor([scale, scale], dtype=dtype, device=device).repeat(B,1)
+    center = torch.tensor([[img[0].shape[-1]/2, img[0].shape[-2]/2]], dtype=dtype, device=device).repeat(B,1)
+    translation = torch.tensor([[tx, ty]], dtype=dtype, device=device).repeat(B,1)
+    matrix = K.geometry.transform.get_affine_matrix2d(translation, center, scale, angle)
+
+
+    if masks is not None:
+        new_matrix, new_H, new_W = expand_affine_from_joint_contour(matrix, masks)
+    else:
+        new_matrix, new_H, new_W = expand_affine_from_corners(matrix, H, W)
+
+    output_size = (new_H,new_W)
+
+    imgs_out = []
+    for img in imgs:
+        imgs_out.append( affine_warp_image(img, new_matrix, output_size) )
+    if len(imgs_out)==1:
+        imgs_out = imgs_out[0]
+    out_dict = {"imgs": imgs_out}
+
+    if masks is not None:
+        masks_out = []
+        for mask in masks:
+            masks_out.append( affine_warp_image(mask, new_matrix, output_size, interpolation="nearest") )
+        if len(masks_out)==1:
+            masks_out = masks_out[0]
+        out_dict.update({"masks": masks_out})
+
+    if pts_list is not None:
+        pts_out = []
+        for pts in pts_list:
+            pts_out.append( affine_warp_points(pts, new_matrix) )
+        if len(pts_out)==1:
+            pts_out = pts_out[0]
+        out_dict.update({"pts": pts_out})
+
+    if return_matrix:
+        out_dict.update({"matrix": new_matrix})
+
+    return out_dict
