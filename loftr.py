@@ -30,7 +30,7 @@ def load_resize_image(img_path: str, H: int=375, W: int=600):
     return img
 
 
-def loftr_match(img_fix, img_mov, verbose: bool=True, return_n_matches: bool=False):
+def loftr_match(img_fix: torch.Tensor, img_mov: torch.Tensor, mask_fix: torch.Tensor=None, mask_mov: torch.Tensor=None, verbose: bool=True, return_n_matches: bool=False):
     """
     Detects Feature matches between fixed and moving images using LoFTR
 
@@ -49,11 +49,30 @@ def loftr_match(img_fix, img_mov, verbose: bool=True, return_n_matches: bool=Fal
         img_fix = img_fix.unsqueeze(0)
     if img_mov.dim() == 3:
         img_mov = img_mov.unsqueeze(0)
+    if (mask_fix is not None) and (mask_mov is not None):
+        if mask_fix.dim() == 2:
+            mask_fix = mask_fix.unsqueeze(0)
+        if mask_mov.dim() == 2:
+            mask_mov = mask_mov.unsqueeze(0)
+        if mask_fix.dim() == 4:
+            mask_fix = mask_fix.squeeze(0)
+        if mask_mov.dim() == 4:
+            mask_mov = mask_mov.squeeze(0)
 
-    input_dict = {
-        "image0": K.color.rgb_to_grayscale(img_fix),  # LofTR works on grayscale images only
-        "image1": K.color.rgb_to_grayscale(img_mov),
-    }
+    # if (mask_fix is not None) and (mask_mov is not None):
+        input_dict = {
+            "image0": K.color.rgb_to_grayscale(img_fix),  # LofTR works on grayscale images only
+            "image1": K.color.rgb_to_grayscale(img_mov),
+            "mask0": mask_fix,
+            "mask1": mask_mov,
+        }
+    else:
+        input_dict = {
+            "image0": K.color.rgb_to_grayscale(img_fix),  # LofTR works on grayscale images only
+            "image1": K.color.rgb_to_grayscale(img_mov),
+        }
+
+
 
     with torch.inference_mode():
         correspondences = matcher(input_dict)
