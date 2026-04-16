@@ -1,3 +1,4 @@
+import cv2
 import kornia as K
 import kornia.geometry.transform as KT
 import numpy as np
@@ -727,3 +728,104 @@ def affine_warp_expand(imgs: torch.Tensor, masks: torch.Tensor=None, pts_list: L
         out_dict.update({"matrix": new_matrix})
 
     return out_dict
+
+
+def find_roi_rotation(mask):
+    bdry_pts = extract_mask_boundary(mask)[0] # get boundary points
+    bdry_pts_np = bdry_pts.cpu().numpy().astype(np.float32) # convert to np for opencv
+
+    # get the minimum-area bounding rectangle
+    rect = cv2.minAreaRect(bdry_pts_np) # ((cx, cy), (y, x), angle)
+    # angle is in degrees, range [-90, 0)
+
+
+    # angle = rect[2]
+    # y,x = rect[1]
+    # cx, cy = rect[0]
+    (cx, cy), (w, h), angle = rect
+    if h > w:
+        angle += 90  # rotate so long side along x-axis
+
+    return torch.tensor(angle)
+
+class RandomHomography:
+    def __init__(
+        self,
+        height,
+        width,
+        distortion_scale=0.5,
+        device="cpu",
+        dtype=torch.float32,
+    ):
+        self.height = height
+        self.width = width
+
+        self.aug = K.augmentation.RandomPerspective(
+            distortion_scale=distortion_scale,
+            p=1.0,
+            same_on_batch=True,
+            keepdim=True,
+        ).to(device=device, dtype=dtype)
+
+        # sample once on dummy input to fix parameters
+        dummy = torch.zeros(1, 1, height, width, device=device, dtype=dtype)
+        self.aug(dummy)
+        self.params = self.aug._params
+        # self.params = self.aug.forward_parameters(dummy.shape)
+
+        self.H, self.H_inv = self._compute_matrices()
+        
+
+    def _compute_matrices(self):
+        start = self.params["start_points"]  # (1, 4, 2)
+        end = self.params["end_points"]      # (1, 4, 2)
+
+        H = K.geometry.transform.get_perspective_transform(start, end)
+        H_inv = torch.inverse(H)
+
+        return H, H_inv
+
+    # -----------------------
+    # Image warping
+    # -----------------------
+    def warp_image(self, x):
+        return self.aug(x, params=self.params)
+
+    def warp_image_inverse(self, x):
+        return self.aug.inverse(x, params=self.params)
+
+    # -----------------------
+    # Points warping
+    # -----------------------
+    def warp_points(self, points):
+        """
+        points: (B, N, 2)
+        """
+        pts_dim = points.dim()
+        if pts_dim == 2:
+            points = points.unsqueeze(0)
+        B = points.shape[0]
+        H = self.H.expand(B, -1, -1)
+        out = K.geometry.linalg.transform_points(H, points)
+        if pts_dim == 2:
+            out = out.squeeze(0)
+        return out
+
+
+    def warp_points_inverse(self, points):
+        pts_dim = points.dim()
+        if pts_dim == 2:
+            points = points.unsqueeze(0)
+        B = points.shape[0]
+        H = self.H_inv.expand(B, -1, -1)
+        out = K.geometry.linalg.transform_points(H, points)
+        if pts_dim == 2:
+            out = out.squeeze(0)
+        return out
+        
+    # -----------------------
+    def matrix(self):
+        return self.H
+
+    def inverse_matrix(self):
+        return self.H_inv

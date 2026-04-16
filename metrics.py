@@ -30,8 +30,14 @@ def mse(img1, img2, reduction='mean'):
     img1 = convert_image_to_tensor(img1)
     img2 = convert_image_to_tensor(img2)
 
-    mse_loss = torch.nn.MSELoss(reduction=reduction)
-    return mse_loss(img1, img2)
+    mse_loss = torch.nn.MSELoss(reduction='none')
+    loss = mse_loss(img1, img2)  # [B, C, H, W]
+    if reduction=='mean':
+        return loss.mean(dim=(1, 2, 3))
+    elif reduction=='none':
+        return loss
+    else:
+        raise ValueError("reduction must be either 'mean' or 'none'")
 
 def mse_masked(img1, img1_mask, img2, img2_mask, reduction="mean", mask_mode='both'):
     img1 = convert_image_to_tensor(img1)

@@ -472,7 +472,139 @@ def filter_matches_by_min_distance(mkpts0, mkpts1, confidence, min_dist: float=2
 
     return torch.from_numpy(mkpts0[selected]), torch.from_numpy(mkpts1[selected]), #torch.from_numpy(confidence[selected])   )
 
-    
 
+# warp consistency ---------------
+
+def nearest_neighbors(pts1, pts2):
+    """
+    pts1: (N, D)
+    pts2: (M, D)
+
+    Returns:
+        Tensor of indices, such that pts2[indices[i]] is the nearest neighbor of pts[i]
+    """
+    # pairwise distances: dists[i,j] = dist(pts1[i], pts2[j])
+    dists = torch.cdist(pts1, pts2)  # (N, M)
+
+    # nearest neighbor in pts2 for each pts1
+    min_dists, indices = torch.min(dists, dim=1)
+
+    return indices#, min_dists
+
+def cycle_matches(kpts12_2, kpts23_2, kpts23_3, kpts31_3, kpts31_1, return_indices: bool=False):
+    """
+    Cycles from Img1 to Img2 to Img3, picking always to nearest neighbor from the new set of matches.
+
+    Returns the matches in Img1 after they've made a full cycle
+    """
+    nearest_neighbors_img2 = nearest_neighbors(kpts12_2, kpts23_2)
+    nearest_neighbors_img3 = nearest_neighbors(kpts23_3, kpts31_3)
+
+    # kpts23_2 = kpts23_2[nearest_neighbors_img2]
+    # kpts23_3 = kpts23_3[nearest_neighbors_img2]
+    # kpts31_3 = kpts31_3[nearest_neighbors_img3[nearest_neighbors_img2]]
+    kpts31_1 = kpts31_1[nearest_neighbors_img3[nearest_neighbors_img2]]
+    if return_indices:
+        return kpts31_1, nearest_neighbors_img2, nearest_neighbors_img3
+    else:
+        return kpts31_1
+
+def plot_cycle_matches(img1, img2, img3, kpts12_1, kpts12_2, kpts23_2, kpts23_3, kpts31_3, kpts31_1, nearest_neighbors_img2, nearest_neighbors_img3, N_show=50):
+    N_show = min(N_show, len(kpts12_1))
+    show_idx = torch.randperm(len(kpts12_1))[:N_show]
+
+    kpts12_1 = kpts12_1[show_idx]
+    kpts12_2 = kpts12_2[show_idx]
+    kpts23_2 = kpts23_2[nearest_neighbors_img2[show_idx]]
+    kpts23_3 = kpts23_3[nearest_neighbors_img2[show_idx]]
+    kpts31_3 = kpts31_3[nearest_neighbors_img3[nearest_neighbors_img2[show_idx]]]
+    kpts31_1 = kpts31_1[nearest_neighbors_img3[nearest_neighbors_img2[show_idx]]]
+
+    fig, ax = plt.subplots(figsize=(8,6))
+    img_list = [img1, img2, img3, img1]
+    img_set = np.concatenate([K.tensor_to_image(img1), K.tensor_to_image(img2), K.tensor_to_image(img3), K.tensor_to_image(img1)], axis=0)
+    ax.imshow(img_set, cmap='gray')
+
+    prev = 0
+    for i in range(len(img_list)):
+        ax.hlines(y=prev+img_list[i].shape[2], xmin=0, xmax=img_list[i].shape[3]-1, color='grey', linewidth=1)
+        prev += img_list[i].shape[2]
+
+    color = 'cyan'
+    y_disp = 0
+    for (x0, y0), (x1, y1) in zip(kpts12_1, kpts12_2):
+        ax.scatter([x0, x1 ], [y0 + y_disp, y1 + y_disp + img1.shape[2]], color=color, s=2)
+        ax.plot([x0, x1 ], [y0 + y_disp, y1 + y_disp + img1.shape[2]], color=color, linewidth=1)
+    y_disp += img1.shape[2]
+
+    for (x0, y0), (x1, y1) in zip(kpts12_2, kpts23_2):
+        ax.plot([x0, x1 ], [y0 + y_disp, y1 + y_disp], color='white', linewidth=1)
+
+    color = 'orange'
+    for (x0, y0), (x1, y1) in zip(kpts23_2, kpts23_3):
+        ax.scatter([x0, x1 ], [y0 + y_disp, y1 + y_disp + img2.shape[2]], color=color, s=2)
+        ax.plot([x0, x1 ], [y0 + y_disp, y1 + y_disp + img2.shape[2]], color=color, linewidth=1)
+    y_disp += img2.shape[2]
+
+    for (x0, y0), (x1, y1) in zip(kpts23_3, kpts31_3):
+        ax.plot([x0, x1 ], [y0 + y_disp, y1 + y_disp], color='white', linewidth=1)
+
+    color = 'lime'
+    for (x0, y0), (x1, y1) in zip(kpts31_3, kpts31_1):
+        ax.scatter([x0, x1 ], [y0 + y_disp, y1 + y_disp + img3.shape[2]], color=color, s=2)
+        ax.plot([x0, x1 ], [y0 + y_disp, y1 + y_disp + img3.shape[2]], color=color, linewidth=1)
+    y_disp += img3.shape[2]
+
+    for (x0, y0), (x1, y1) in zip(kpts31_1, kpts12_1):
+        ax.plot([x0, x1 ], [y0 + y_disp, y1 + y_disp], color='white', linewidth=1)
+
+    color = 'red'
+    ax.scatter(kpts12_1[:,0], kpts12_1[:,1] + y_disp, color=color, s=2)
+
+    ax.axis('off')
+    plt.show()
+
+def warp_consistency(img_fixed, img_moving, plot_matches: bool=False, distortion_scale=0.4, tolerance=50, verbose: bool=False):
+    hom = RandomHomography(img_fixed.shape[2], img_fixed.shape[3], distortion_scale=distortion_scale)
+
+    img1 = img_fixed
+    img2 = img_moving
+    img3 =  hom.warp_image(img_moving)
+
+    if verbose:
+        print(f"Detecting LoFTR Matches...")
+    # 1 -> 2
+    mkpts12_1, mkpts12_2, confidence_12, _,= loftr_match(img1, img2, verbose=verbose, return_n_matches=False)
+    # 2 -> 3
+    mkpts23_2, mkpts23_3, confidence_23, _,= loftr_match(img2, img3, verbose=verbose, return_n_matches=False)
+    # 3 -> 1
+    mkpts31_3, mkpts31_1, confidence_31, _,= loftr_match(img3, img1, verbose=verbose, return_n_matches=False)
+    if verbose:
+        print(f"Img1 -> Img2: {len(mkpts12_1)} Matches")
+        print(f"Img2 -> Img3: {len(mkpts23_2)} Matches")
+        print(f"Img3 -> Img1: {len(mkpts31_3)} Matches")
+
+    if plot_matches:
+        _ = plot_match_coverage(img1, mkpts12_1, img2, mkpts12_2, confidence_12)
+        _ = plot_match_coverage(img2, mkpts23_2, img3, mkpts23_3, confidence_23)
+        _ = plot_match_coverage(img3, mkpts31_3, img1, mkpts31_1, confidence_31)
+
+
+    if plot_matches:
+        cycled_31_1, nn_ind_2, nn_ind_3 = cycle_matches(mkpts12_2, mkpts23_2, mkpts23_3, mkpts31_3, mkpts31_1, return_indices=True)
+        plot_cycle_matches(img1, img2, img3, mkpts12_1, mkpts12_2, mkpts23_2, mkpts23_3, mkpts31_3, mkpts31_1, nn_ind_2, nn_ind_3, N_show=30)
+    else:
+        cycled_31_1 = cycle_matches(mkpts12_2, mkpts23_2, mkpts23_3, mkpts31_3, mkpts31_1)
+    dists = torch.norm(mkpts12_1 - cycled_31_1, dim=1)
+    is_consistent = (dists < tolerance)
+
+    if plot_matches:
+        print(f"Number of consistent matches: {int(is_consistent.sum())}")
+        print(f"Ratio of consistent matches: {is_consistent.to(torch.float32).mean():.3f}")
+        print(f"Least confident of consistent matches: {confidence_12[is_consistent].min():.3f}")
+        _ = plot_match_coverage(img1, mkpts12_1[is_consistent], img2, mkpts12_2[is_consistent], confidence_12[is_consistent])
+        # _ = plot_match_coverage(img1, cycled_31_1[is_consistent], img1, mkpts12_1[is_consistent], is_consistent[is_consistent])
+
+    return mkpts12_1[is_consistent], mkpts12_2[is_consistent], confidence_12[is_consistent]
 
 
