@@ -157,6 +157,26 @@ def erode_crop_leaf(leaf: LeafDataset, index: int, scale: float=1.2, return_mask
     else:
         return masked_scaled_img
 
+def erode_mask(mask: torch.Tensor, scale: float=1.2, erode_px: int=60):
+    """
+    erodes mask. if erode_px > 0, the mask is eroded. otherwise, erode by scaling
+
+    Returns eroded mask 
+    """
+
+    if erode_px > 0:
+        kernel = torch.ones((5,5), dtype=torch.float32, device=mask.device)
+        for _ in range(int(erode_px/5)):
+            # unsqueeze mask to add batch dim
+            mask = K.morphology.erosion(mask, kernel, border_type='constant')
+    else:
+        raise NotImplementedError
+        scaled_img = scale_image(masked_img, scale)
+        out_img = scaled_img * mask
+
+    return mask
+
+
 def erode_leaf(img: torch.Tensor, mask: torch.Tensor, scale: float=1.2, erode_px: int=60, return_mask: bool=True):
     """
     erodes leaf. if erode_px > 0, the mask is eroded. otherwise, erode by scaling
