@@ -378,6 +378,39 @@ def filter_matches_by_confidence(mkpts0, mkpts1, confidence, threshold: float=0.
 
     return img_fix_mks, img_mov_mks
 
+def filter_matches_by_confidence_bin_search(mkpts0, mkpts1, confidence, n_target: int=500, tol: int=50, min_conf: float=0.5):
+    """
+    Filters points by confidence, adjusting the confidence threshold so that the resulting subset of points is within a tolerance of the targeted number of points.
+    """
+    
+    best_0 = mkpts0[confidence > min_conf]
+    best_1 = mkpts1[confidence > min_conf]
+
+    if len(best_0) <= n_target:
+        return best_0, best_1  # nothing to do
+
+    low = min_conf
+    high = 1.0 
+
+    for _ in range(20):  # enough iterations to achieve convergence
+        mid = (low + high) / 2
+        filtered0 = mkpts0[confidence > mid]
+        filtered1 = mkpts1[confidence > mid]
+
+        if len(filtered0) > n_target:
+            # too many points → increase threshold
+            low = mid
+        else:
+            # too few points → decrease threshold
+            high = mid
+            best_0 = filtered0
+            best_1 = filtered1
+
+        if abs(len(filtered0) - n_target) < tol:
+            return filtered0, filtered1
+
+    return best_0, best_1
+
 def filter_matches_by_grid(mkpts0, mkpts1, confidence, img_width, threshold: float=0.5, cell_size: int=50):
     num_cell_per_row =  math.ceil(img_width / cell_size)
 
@@ -395,6 +428,53 @@ def filter_matches_by_grid(mkpts0, mkpts1, confidence, img_width, threshold: flo
         cell_max_coord0 = cell_max_coord0[confidence[cell_max_indices] > threshold]
         cell_max_coord1 = cell_max_coord1[confidence[cell_max_indices] > threshold]
     return cell_max_coord0, cell_max_coord1
+
+def filter_matches_by_grid_adaptive(mkpts0, mkpts1, confidence, img_shape, n_target: int=500, tol: int=50, threshold: float=0.5):
+    """
+    Iteratively filters points by min grid, adjusting the cell size parameter so that the resulting subset of points is within a tolerance of the targeted number of points.
+    
+    Args:
+        mkpts0: (N, 2) array/tensor of keypoints in image 0
+        mkpts1: (N, 2) array/tensor of keypoints in image 1
+        confidence: (N,) match confidence
+        img_shape: shape of the underlying image(s)
+        n_target: targeted number of matches
+        tol: tolerance indicating by how much the number of matches may deviate from the target 
+        threshold: confidence threshold. only matches with confidence above this threshold are considered
+
+    Returns:
+        filtered kpts0, filtered kpts1
+    
+    """
+    
+    best_0 = mkpts0[confidence > threshold]
+    best_1 = mkpts1[confidence > threshold]
+
+    if len(best_0) <= n_target:
+        return best_0, best_1  # nothing to do
+
+    low = 1e-6  # very small cells → almost all points kept
+    high = max(img_shape[-1], img_shape[-2])
+    
+
+    for _ in range(20):  # enough iterations to achieve convergence
+        mid = (low + high) / 2
+        filtered0, filtered1 = filter_matches_by_grid(mkpts0, mkpts1, confidence, img_width=img_shape[3], cell_size=mid, threshold=threshold)
+
+        if len(filtered0) > n_target:
+            # too many points → increase cell size (i.e. decrease number of cells)
+            low = mid
+        else:
+            # too few points → decrease cell size (i.e. increase number of cells)
+            high = mid
+            best_0 = filtered0
+            best_1 = filtered1
+
+        if abs(len(filtered0) - n_target) < tol:
+            return filtered0, filtered1
+
+    return best_0, best_1
+
 
 def filter_matches_by_cluster(mkpts0, mkpts1, confidence, threshold: float=0.5, n_clusters: int=400):
 
@@ -417,14 +497,15 @@ def filter_matches_by_min_distance(mkpts0, mkpts1, confidence, min_dist: float=2
     Greedy minimum-distance filtering for LoFTR matches.
 
     Args:
-        kpts0: (N, 2) array/tensor of keypoints in image 0
-        kpts1: (N, 2) array/tensor of keypoints in image 1
+        mkpts0: (N, 2) array/tensor of keypoints in image 0
+        mkpts1: (N, 2) array/tensor of keypoints in image 1
         confidence: (N,) match confidence
         min_dist: minimum pixel spacing between selected keypoints
         max_points: optional cap on number of matches
+        threshold: confidence threshold. only matches with confidence above this threshold are considered
 
     Returns:
-        filtered_kpts0, filtered_kpts1, filtered_conf
+        filtered_kpts0, filtered_kpts1
     """
 
     # Convert to numpy if torch
@@ -443,6 +524,7 @@ def filter_matches_by_min_distance(mkpts0, mkpts1, confidence, min_dist: float=2
     n_skip = 0
 
     for idx in idxs:
+        # only consider matches satisfying the confidence threshold
         if confidence[idx] < threshold:
             break
 
@@ -471,6 +553,54 @@ def filter_matches_by_min_distance(mkpts0, mkpts1, confidence, min_dist: float=2
     # print(f"points skipped: {n_skip}")
 
     return torch.from_numpy(mkpts0[selected]), torch.from_numpy(mkpts1[selected]), #torch.from_numpy(confidence[selected])   )
+
+
+def filter_matches_by_min_distance_adaptive(mkpts0, mkpts1, confidence, img_shape, n_target: int=500, tol: int=50, max_points: int=500, threshold: float=0.5):
+    """
+    Iteratively filters points by min distance, adjusting the min distance parameter so that the resulting subset of points is within a tolerance of the targeted number of points.
+    
+    Args:
+        mkpts0: (N, 2) array/tensor of keypoints in image 0
+        mkpts1: (N, 2) array/tensor of keypoints in image 1
+        confidence: (N,) match confidence
+        img_shape: shape of the underlying image(s)
+        n_target: targeted number of matches
+        tol: tolerance indicating by how much the number of matches may deviate from the target 
+        threshold: confidence threshold. only matches with confidence above this threshold are considered
+        max_points: optional cap on number of matches
+
+    Returns:
+        filtered kpts0, filtered kpts1
+    
+    """
+    
+    best_0 = mkpts0[confidence > threshold]
+    best_1 = mkpts1[confidence > threshold]
+
+    if len(best_0) <= n_target:
+        return best_0, best_1  # nothing to do
+
+    low = 0.0
+    high = np.sqrt(img_shape[-1]**2 + img_shape[-2]**2)  # e.g. image diagonal
+    
+
+    for i in range(20):  # enough iterations to achieve convergence
+        mid = (low + high) / 2
+        filtered0, filtered1 = filter_matches_by_min_distance(mkpts0, mkpts1, confidence, min_dist=mid, max_points=max_points, threshold=threshold)
+
+        if len(filtered0) > n_target:
+            # too many points → increase distance
+            low = mid
+        else:
+            # too few points → decrease distance
+            high = mid
+            best_0 = filtered0
+            best_1 = filtered1
+
+        if abs(len(filtered0) - n_target) < tol:
+            return filtered0, filtered1
+
+    return best_0, best_1
 
 
 # warp consistency ---------------
