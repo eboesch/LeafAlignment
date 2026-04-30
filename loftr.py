@@ -8,7 +8,7 @@ import skimage as ski
 import math
 from sklearn.cluster import KMeans
 from torch_tps import ThinPlateSpline
-from utils import convert_image_to_tensor, group_by_argmax
+from utils import convert_image_to_tensor, group_by_argmax, affine_warp_expand
 from plotting import plot_matches_conf, plot_match_coverage
 
 
@@ -59,7 +59,6 @@ def loftr_match(img_fix: torch.Tensor, img_mov: torch.Tensor, mask_fix: torch.Te
         if mask_mov.dim() == 4:
             mask_mov = mask_mov.squeeze(0)
 
-    # if (mask_fix is not None) and (mask_mov is not None):
         input_dict = {
             "image0": K.color.rgb_to_grayscale(img_fix),  # LofTR works on grayscale images only
             "image1": K.color.rgb_to_grayscale(img_mov),
@@ -398,10 +397,10 @@ def filter_matches_by_confidence_bin_search(mkpts0, mkpts1, confidence, n_target
         filtered1 = mkpts1[confidence > mid]
 
         if len(filtered0) > n_target:
-            # too many points → increase threshold
+            # too many points -> increase threshold
             low = mid
         else:
-            # too few points → decrease threshold
+            # too few points -> decrease threshold
             high = mid
             best_0 = filtered0
             best_1 = filtered1
@@ -429,7 +428,7 @@ def filter_matches_by_grid(mkpts0, mkpts1, confidence, img_width, threshold: flo
         cell_max_coord1 = cell_max_coord1[confidence[cell_max_indices] > threshold]
     return cell_max_coord0, cell_max_coord1
 
-def filter_matches_by_grid_adaptive(mkpts0, mkpts1, confidence, img_shape, n_target: int=500, tol: int=50, threshold: float=0.5):
+def filter_matches_by_grid_adaptive(mkpts0, mkpts1, confidence, img_shape, n_target: int=500, tol: int=50, min_conf: float=0.5):
     """
     Iteratively filters points by min grid, adjusting the cell size parameter so that the resulting subset of points is within a tolerance of the targeted number of points.
     
@@ -459,13 +458,13 @@ def filter_matches_by_grid_adaptive(mkpts0, mkpts1, confidence, img_shape, n_tar
 
     for _ in range(20):  # enough iterations to achieve convergence
         mid = (low + high) / 2
-        filtered0, filtered1 = filter_matches_by_grid(mkpts0, mkpts1, confidence, img_width=img_shape[3], cell_size=mid, threshold=threshold)
+        filtered0, filtered1 = filter_matches_by_grid(mkpts0, mkpts1, confidence, img_width=img_shape[3], cell_size=mid, threshold=min_conf)
 
         if len(filtered0) > n_target:
-            # too many points → increase cell size (i.e. decrease number of cells)
+            # too many points -> increase cell size (i.e. decrease number of cells)
             low = mid
         else:
-            # too few points → decrease cell size (i.e. increase number of cells)
+            # too few points -> decrease cell size (i.e. increase number of cells)
             high = mid
             best_0 = filtered0
             best_1 = filtered1
@@ -476,17 +475,17 @@ def filter_matches_by_grid_adaptive(mkpts0, mkpts1, confidence, img_shape, n_tar
     return best_0, best_1
 
 
-def filter_matches_by_cluster(mkpts0, mkpts1, confidence, threshold: float=0.5, n_clusters: int=400):
+def filter_matches_by_cluster(mkpts0, mkpts1, confidence, min_conf: float=0.5, n_clusters: int=400):
 
     # only consider above threshold
-    mkpts0_th = mkpts0[confidence > threshold]
-    mkpts1_th = mkpts1[confidence > threshold]
+    mkpts0_th = mkpts0[confidence > min_conf]
+    mkpts1_th = mkpts1[confidence > min_conf]
 
     # cluster remaining matches
     kmeans = KMeans(n_clusters=n_clusters, random_state=0, n_init="auto").fit(mkpts0_th)
     
     # get indices of max per cell
-    cluster_max_indices = group_by_argmax(confidence[confidence>threshold], torch.Tensor(kmeans.labels_))
+    cluster_max_indices = group_by_argmax(confidence[confidence>min_conf], torch.Tensor(kmeans.labels_))
     cluster_max_coord0 = mkpts0_th[cluster_max_indices, :]
     cluster_max_coord1 = mkpts1_th[cluster_max_indices, :]
 
@@ -555,7 +554,7 @@ def filter_matches_by_min_distance(mkpts0, mkpts1, confidence, min_dist: float=2
     return torch.from_numpy(mkpts0[selected]), torch.from_numpy(mkpts1[selected]), #torch.from_numpy(confidence[selected])   )
 
 
-def filter_matches_by_min_distance_adaptive(mkpts0, mkpts1, confidence, img_shape, n_target: int=500, tol: int=50, max_points: int=500, threshold: float=0.5):
+def filter_matches_by_min_distance_adaptive(mkpts0, mkpts1, confidence, img_shape, n_target: int=500, tol: int=50, min_conf: float=0.5, max_points: int=None):
     """
     Iteratively filters points by min distance, adjusting the min distance parameter so that the resulting subset of points is within a tolerance of the targeted number of points.
     
@@ -574,8 +573,8 @@ def filter_matches_by_min_distance_adaptive(mkpts0, mkpts1, confidence, img_shap
     
     """
     
-    best_0 = mkpts0[confidence > threshold]
-    best_1 = mkpts1[confidence > threshold]
+    best_0 = mkpts0[confidence > min_conf]
+    best_1 = mkpts1[confidence > min_conf]
 
     if len(best_0) <= n_target:
         return best_0, best_1  # nothing to do
@@ -589,10 +588,10 @@ def filter_matches_by_min_distance_adaptive(mkpts0, mkpts1, confidence, img_shap
         filtered0, filtered1 = filter_matches_by_min_distance(mkpts0, mkpts1, confidence, min_dist=mid, max_points=max_points, threshold=threshold)
 
         if len(filtered0) > n_target:
-            # too many points → increase distance
+            # too many points -> increase distance
             low = mid
         else:
-            # too few points → decrease distance
+            # too few points -> decrease distance
             high = mid
             best_0 = filtered0
             best_1 = filtered1
@@ -602,6 +601,18 @@ def filter_matches_by_min_distance_adaptive(mkpts0, mkpts1, confidence, img_shap
 
     return best_0, best_1
 
+
+def filter_matches(strategy: str, mkpts0, mkpts1, confidence, img_shape, n_target: int=500, tol: int=50, min_conf: float=0.5):
+    if strategy == "confidence":
+        return filter_matches_by_confidence_bin_search(mkpts0, mkpts1, confidence, n_target=n_target, tol=tol, min_conf=min_conf)
+    elif strategy == "grid":
+        return filter_matches_by_grid_adaptive(mkpts0, mkpts1, confidence, img_shape, n_target=n_target, tol=tol, min_conf=min_conf)
+    elif strategy == "clusters":
+        return filter_matches_by_cluster(mkpts0, mkpts1, confidence, min_conf=min_conf, n_clusters=n_target)
+    elif strategy == "min_distance":
+        return filter_matches_by_min_distance_adaptive(mkpts0, mkpts1, confidence, img_shape, n_target=n_target, tol=tol, min_conf=min_conf)
+    else:
+        raise ValueError(f"Unknown filtering strategy {strategy}. Expected on of 'confidence', 'grid', 'clusters', 'min_distance'.")
 
 # warp consistency ---------------
 
@@ -694,12 +705,32 @@ def plot_cycle_matches(img1, img2, img3, kpts12_1, kpts12_2, kpts23_2, kpts23_3,
     ax.axis('off')
     plt.show()
 
-def warp_consistency(img_fixed, img_moving, plot_matches: bool=False, distortion_scale=0.4, tolerance=50, verbose: bool=False):
-    hom = RandomHomography(img_fixed.shape[2], img_fixed.shape[3], distortion_scale=distortion_scale)
+def warp_consistency(
+    img_fixed, 
+    img_moving, 
+    mask_moving, 
+    plot_matches: bool=False, 
+    tolerance: float=10, 
+    transform_type: str="rotation", 
+    rotation: float=-10, 
+    distortion_scale: float=0.4, 
+    verbose: bool=False
+    ):
+    
+    
+    
 
     img1 = img_fixed
     img2 = img_moving
-    img3 =  hom.warp_image(img_moving)
+    img2_mask = mask_moving
+    if transform_type == "rotation":
+        out = affine_warp_expand(img2, img2_mask, rot_angle_deg=rotation)
+        img3 = out["imgs"]
+    elif transform_type == "homography":
+        hom = RandomHomography(img_fixed.shape[2], img_fixed.shape[3], distortion_scale=distortion_scale)
+        img3 =  hom.warp_image(img_moving)
+    else:
+        raise ValueError(f"Unknown transform_type {transform_type}. Expected 'rotation' or 'homography'.")
 
     if verbose:
         print(f"Detecting LoFTR Matches...")
@@ -708,23 +739,28 @@ def warp_consistency(img_fixed, img_moving, plot_matches: bool=False, distortion
     # 2 -> 3
     mkpts23_2, mkpts23_3, confidence_23, _,= loftr_match(img2, img3, verbose=verbose, return_n_matches=False)
     # 3 -> 1
-    mkpts31_3, mkpts31_1, confidence_31, _,= loftr_match(img3, img1, verbose=verbose, return_n_matches=False)
+    # mkpts31_3, mkpts31_1, confidence_31, _,= loftr_match(img3, img1, verbose=verbose, return_n_matches=False)
+    mkpts13_1, mkpts13_3, confidence_13, _ = loftr_match(img1, img3, verbose=verbose, return_n_matches=False)
     if verbose:
         print(f"Img1 -> Img2: {len(mkpts12_1)} Matches")
         print(f"Img2 -> Img3: {len(mkpts23_2)} Matches")
-        print(f"Img3 -> Img1: {len(mkpts31_3)} Matches")
+        print(f"Img3 -> Img1: {len(mkpts13_3)} Matches")
 
     if plot_matches:
         _ = plot_match_coverage(img1, mkpts12_1, img2, mkpts12_2, confidence_12)
         _ = plot_match_coverage(img2, mkpts23_2, img3, mkpts23_3, confidence_23)
-        _ = plot_match_coverage(img3, mkpts31_3, img1, mkpts31_1, confidence_31)
+        # _ = plot_match_coverage(img3, mkpts31_3, img1, mkpts31_1, confidence_31)
+        _ = plot_match_coverage(img3, mkpts13_3, img1, mkpts13_1, confidence_13)
 
 
     if plot_matches:
-        cycled_31_1, nn_ind_2, nn_ind_3 = cycle_matches(mkpts12_2, mkpts23_2, mkpts23_3, mkpts31_3, mkpts31_1, return_indices=True)
-        plot_cycle_matches(img1, img2, img3, mkpts12_1, mkpts12_2, mkpts23_2, mkpts23_3, mkpts31_3, mkpts31_1, nn_ind_2, nn_ind_3, N_show=30)
+        # cycled_31_1, nn_ind_2, nn_ind_3 = cycle_matches(mkpts12_2, mkpts23_2, mkpts23_3, mkpts31_3, mkpts31_1, return_indices=True)
+        # plot_cycle_matches(img1, img2, img3, mkpts12_1, mkpts12_2, mkpts23_2, mkpts23_3, mkpts31_3, mkpts31_1, nn_ind_2, nn_ind_3, N_show=30)
+        cycled_31_1, nn_ind_2, nn_ind_3 = cycle_matches(mkpts12_2, mkpts23_2, mkpts23_3, mkpts13_3, mkpts13_1, return_indices=True)
+        plot_cycle_matches(img1, img2, img3, mkpts12_1, mkpts12_2, mkpts23_2, mkpts23_3, mkpts13_3, mkpts13_1, nn_ind_2, nn_ind_3, N_show=30)
     else:
-        cycled_31_1 = cycle_matches(mkpts12_2, mkpts23_2, mkpts23_3, mkpts31_3, mkpts31_1)
+        # cycled_31_1 = cycle_matches(mkpts12_2, mkpts23_2, mkpts23_3, mkpts31_3, mkpts31_1)
+        cycled_31_1 = cycle_matches(mkpts12_2, mkpts23_2, mkpts23_3, mkpts13_3, mkpts13_1)
     dists = torch.norm(mkpts12_1 - cycled_31_1, dim=1)
     is_consistent = (dists < tolerance)
 
