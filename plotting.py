@@ -11,59 +11,6 @@ import math
 from utils import convert_image_to_tensor 
 
 
-# def plot_matches_moons(img_fix, keypts_fix, img_mov, keypts_mov, inliers, N_show: int=100, inliers_only: bool=True, vertical: bool=True):
-#     """
-#     Plots matches between images.
-
-#     Args:
-#         img_fix:    fixed image
-#         keypts_fix: coordinates of keypoints in fixed image 
-#         img_mov:    moving image
-#         keypts_mov: coordinates of keypoints in moving image 
-#         inliers:     array containing classification as inlier of each match
-#         N_show (int):   how many matches to plot 
-#         inliers_only (bool):    whether to plot only matches classified as inliers
-#         vertical (bool):    whether to plot images vertically stacked.
-#     """
-#     # select points to plot
-#     if inliers_only:
-#         inliers_t = torch.as_tensor(inliers).flatten() # flatten inliers array and convert to tensor
-#         inlier_idx = torch.nonzero(inliers_t).flatten() # extract indices of True values
-
-#         N_show = min(N_show, inliers.sum())
-#         rand_idx = torch.randperm(len(inlier_idx))[:N_show]  
-#         show_idx = inlier_idx[rand_idx] # plot subset of inliers
-#     else:
-#         N_show = min(N_show, len(keypts_fix))
-#         show_idx = torch.randperm(len(keypts_fix))[:N_show] # plot subset of *all* matches
-    
-#     keypts_fix_show = keypts_fix[show_idx]
-#     keypts_mov_show = keypts_mov[show_idx]
-#     inliers_show = inliers[show_idx]
-
-#     # plot
-#     fig, ax = draw_LAF_matches(
-#         KF.laf_from_center_scale_ori(
-#             keypts_fix_show.view(1, -1, 2),
-#             torch.ones(keypts_fix_show.shape[0]).view(1, -1, 1, 1),
-#             torch.ones(keypts_fix_show.shape[0]).view(1, -1, 1),
-#         ),
-#         KF.laf_from_center_scale_ori(
-#             keypts_mov_show.view(1, -1, 2),
-#             torch.ones(keypts_mov_show.shape[0]).view(1, -1, 1, 1),
-#             torch.ones(keypts_mov_show.shape[0]).view(1, -1, 1),
-#         ),
-#         torch.arange(keypts_fix_show.shape[0]).view(-1, 1).repeat(1, 2),
-#         K.tensor_to_image(img_fix),
-#         K.tensor_to_image(img_mov),
-#         inliers_show,
-#         draw_dict={"inlier_color": (0.2, 1, 0.2), "tentative_color": None, "feature_color": (0.2, 0.5, 1), "vertical": vertical},
-#         return_fig_ax=True
-#     )
-
-#     return fig, ax
-#     # fig.savefig('LeafAlignment/loftr_test.png')
-#     # fig.show()
 
 def plot_matches(img_fix, keypts_fix, img_mov, keypts_mov, inliers, N_show: int=100, inliers_only: bool=True, vertical: bool=True):
     """
@@ -216,7 +163,7 @@ def plot_matches_conf(img_fix, keypts_fix, img_mov, keypts_mov, confidence, N_sh
 
 
 
-def plot_match_coverage(img_fix, keypts_fix, img_mov, keypts_mov, confidence):
+def plot_match_coverage(img_fix, keypts_fix, img_mov, keypts_mov, confidence, title: str=None):
     """
     Args:
         img_fix:    fixed image
@@ -250,6 +197,9 @@ def plot_match_coverage(img_fix, keypts_fix, img_mov, keypts_mov, confidence):
     cbar = fig.colorbar(sc2, ax=[ax1, ax2], orientation='horizontal', fraction=0.046, pad=0.1)
     cbar.set_label("Confidence")
     # fig.colorbar(im, ax=ax2)
+
+    if title is not None:
+        fig.suptitle(f"{title}", fontsize=24)
 
     return fig, (ax1, ax2)
 
@@ -338,7 +288,7 @@ def plot_image_pair(img1, img2, img1_ind: int=None, img2_ind: int = 2, title: st
     return fig, axs
 
 
-def plot_image_series(imgs: list, title: str=None, n_cols: int=3, dpi: int=50, save_fig: bool=False, file_name: str=None, path: str="temp/"):
+def plot_image_series(imgs: list, title: str=None, n_cols: int=2, dpi: int=70, save_fig: bool=False, file_name: str=None, path: str="temp/"):
 
     n = len(imgs)
     n_rows = math.ceil(n/n_cols)
@@ -353,14 +303,16 @@ def plot_image_series(imgs: list, title: str=None, n_cols: int=3, dpi: int=50, s
     W = imgs_np[0].shape[1]
 
     # if n_cols==3:
-    H_factor = math.floor(H/200)
-    W_factor = math.floor(W/200)
+    fig_height = math.floor(H*n_rows/200)
+    fig_width = math.floor(W*n_cols/400)
+    # fig_height = math.floor(H/200) * n_rows
+    # fig_width = math.floor(W/400) * n_cols
     
 
     fig, axes = plt.subplots(
         n_rows,
         n_cols,
-        figsize=(W_factor * n_cols, H_factor * n_rows),
+        figsize=(fig_width, fig_height),
         dpi=dpi,
         sharex=True,
         sharey=False

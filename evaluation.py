@@ -1,3 +1,4 @@
+"""evaluate pairwise registration"""
 import os
 import csv
 import kornia as K
