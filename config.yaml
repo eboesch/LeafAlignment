@@ -1,0 +1,43 @@
+smoothing: 0.0
+return_masks: True
+use_skimage: False
+verbose: False
+
+image_preprocessing:
+  img_scale: "roi" #"full"
+  pre_rotate: True # False
+  erase_markers: 
+    type: "pixel_erosion" 
+    params:
+    #   erode_px: 150 # to overwrite defaults
+    # type: "scaling_erosion" 
+    # params:
+    #   scaling: 1.3
+      
+warp_consistency:
+  consistency_tolerance: 5
+  transform:
+    type: "rotation"
+    params:
+      rotation: -10
+    # type: "homography"
+    # params:
+    #   distortion_scale: 0.4
+
+match_filtering:
+  filtering_strategy: "confidence"
+  # filtering_strategy: "grid"
+  # filtering_strategy: "clusters"
+  # filtering_strategy: "min_distance"
+  n_landmarks: 500
+  n_landmarks_tol: 50
+  min_conf: 0.5
+
+semi_sequential_criterion: 
+  criterion_type: "coverage" # "num_conf_matches"
+  params:
+    dist_threshold: 40
+  # criterion_type: "num_conf_matches"
+  # params:
+  #   conf_threshold: 0.7
+  #   n_threshold: 400

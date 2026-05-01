@@ -4,7 +4,21 @@ import kornia.geometry.transform as KT
 import numpy as np
 import torch
 from typing import List
-
+import yaml
+from pathlib import Path
+ 
+def load_config(config_path: str = "config.yaml") -> dict:
+    """Load and parse a YAML configuration file."""
+    try:
+        # Use Path to handle file paths cross-platform
+        with open(Path(config_path), "r") as f:
+            # safe_load() parses YAML into Python dict/list/primitives
+            config = yaml.safe_load(f)
+        return config
+    except FileNotFoundError:
+        raise RuntimeError(f"Config file not found at: {config_path}")
+    except yaml.YAMLError as e:
+        raise RuntimeError(f"Failed to parse YAML: {e}")
 
 def crop_coords_zero_borders(mask: torch.Tensor):
     """

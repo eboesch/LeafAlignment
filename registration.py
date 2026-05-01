@@ -11,9 +11,14 @@ from skimage.transform import AffineTransform
 # from masking import keypoints_roi_to_image, scale_image, mask_leaf, erode_crop_leaf, crop_ROI_erode_leaf, 
 from utils import convert_image_to_tensor, match_sizes_resize, match_sizes_resize_batch, invert_list
 from masking import fetch_image_mask_pair
-from loftr import loftr_match, tps_skimage, tps_skimage_confidence, register_loftr_tps, register_loftr_tps_skimage, warp_tps_skimage, warp_tps_torch, fit_tps_torch, compose_tps, filter_matches_by_confidence, filter_matches_by_min_distance, filter_matches, warp_consistency
-from plotting import plot_image_pair, plot_overlay
+from loftr import loftr_match, tps_skimage, tps_skimage_confidence, register_loftr_tps, register_loftr_tps_skimage, warp_tps_skimage, warp_tps_torch, fit_tps_torch, compose_tps, filter_matches_by_confidence, filter_matches_by_min_distance, filter_matches, check_warp_consistency
+from plotting import plot_image_pair, plot_overlay, plot_matches_conf, plot_match_coverage
 from DatasetTools.LeafImageSeries import LeafDataset
+
+PREPROCESSING_DEFAULT = {'img_scale': 'full', 'pre_rotate': False, 'erase_markers': {'type': 'pixel_erosion'}}
+CONSISTENCY_DEFAULT = None # {'consistency_tolerance': 10, 'transform': {'type': 'rotation', 'params': {'rotation': -10}}}
+FILTERING_DEFAULT = {'filtering_strategy': 'confidence', 'n_landmarks': 500, 'n_landmarks_tol': 50, 'min_conf': 0.5}
+CRITERION_DEFAULT = {'type': 'coverage', 'params': {'dist_threshold': 40}}
 
 
 
@@ -125,17 +130,9 @@ def register_single_image(
     smoothing: float=0.0,     
     return_tps: bool=False,
     plot_loftr_matches: bool=False, 
-    # use_skimage: bool=False, 
-    use_warp_consistency: bool=True, 
-    consistency_tolerance: float=10,
-    transform_type: str="rotation",
-    rotation: float=-10,
-    distortion_scale: float=0.4, 
-    filter_strategy: str="confidence", 
-    n_landmarks: int=500, 
-    n_landmarks_tol: int=50, 
-    min_conf: float=0.5, 
-    verbose: bool=False
+    warp_consistency: dict=CONSISTENCY_DEFAULT,
+    match_filtering: dict=FILTERING_DEFAULT,
+    verbose: bool=False,
     ):
     
     """
@@ -159,11 +156,17 @@ def register_single_image(
 
     mkpts0, mkpts1, confidence, _ = loftr_match(img_fixed, img_moving, mask_fixed, mask_moving, verbose=verbose, return_n_matches=False)
 
-    if use_warp_consistency: # filter out inconsistent matches
-        mkpts0, mkpts1, confidence = warp_consistency(imgs[ind-j], imgs[ind], masks[ind], plot_matches=False, tolerance=consistency_tolerance, transform_type=transform_type, rotation=rotation, distortion_scale=distortion_scale, verbose=verbose)
+    if warp_consistency is not None: # filter out inconsistent matches
+        mkpts0, mkpts1, confidence = check_warp_consistency(img_fixed, img_moving, mask_moving, plot_matches=False, verbose=verbose, **warp_consistency)
 
     # reduce number of matches
-    mkpts0_filtered, mkpts1_filtered = filter_matches(filtering_strategy, mkpts0, mkpts1, confidence, imgs[ind].shape, n_target=n_landmarks, tol=n_landmarks_tol, min_conf=min_conf)
+    filtering_mapped = { # rename arguments
+        "filtering_strategy": match_filtering["filtering_strategy"],
+        "n_target": match_filtering["n_landmarks"],
+        "tol": match_filtering["n_landmarks_tol"],
+        "min_conf": match_filtering["min_conf"],
+    }
+    mkpts0_filtered, mkpts1_filtered = filter_matches(mkpts0, mkpts1, confidence, img_fixed.shape, **filtering_mapped)
 
     if plot_loftr_matches:
         fig, ax = plot_matches_conf(img_fixed, mkpts0, img_moving, mkpts1, confidence, N_show=50, vertical=True)
@@ -207,22 +210,12 @@ def register_single_image(
 def register_leaf_seq(
     leaf: LeafDataset, 
     smoothing: float=0.0, 
-    img_scale: str="full", 
-    pre_rotate: bool=False, 
-    erase_markers: bool=True, 
-    return_masks: bool=True, 
-    use_scaling_erosion: bool=False, 
+    return_masks: bool=True,
     use_skimage: bool=False, 
-    use_warp_consistency: bool=True, 
-    consistency_tolerance: float=10,
-    transform_type: str="rotation",
-    rotation: float=-10,
-    distortion_scale: float=0.4, 
-    filter_strategy: str="confidence", 
-    n_landmarks: int=500, 
-    n_landmarks_tol: int=50, 
-    min_conf: float=0.5, 
-    verbose: bool=False
+    image_preprocessing: dict=PREPROCESSING_DEFAULT,
+    warp_consistency: dict=CONSISTENCY_DEFAULT,
+    match_filtering: dict=FILTERING_DEFAULT,
+    verbose: bool=False,    
     ):
     
     # retrieve images
@@ -233,7 +226,7 @@ def register_leaf_seq(
         masks = []
 
     for ind in range(leaf.n_leaves):
-        img, mask = img_moving, mask_moving = fetch_image_mask_pair(leaf, ind, img_scale=img_scale, pre_rotate=pre_rotate, erase_markers=erase_markers, use_scaling_erosion=use_scaling_erosion)
+        img, mask = img_moving, mask_moving = fetch_image_mask_pair(leaf, ind, **image_preprocessing)
         imgs.append(img)
         if return_masks:
             masks.append(mask)
@@ -248,6 +241,7 @@ def register_leaf_seq(
     moving_indices = np.arange(1, leaf.n_leaves)
     for ind in tqdm(moving_indices, "Registering Individually"):
         
+        # handle missing data cases
         if imgs[ind] is None:
             print(f"No image data for index {ind}")
             registered_imgs.append(None)
@@ -259,7 +253,7 @@ def register_leaf_seq(
         if use_skimage:
             img_moving, mask_moving = register_loftr_tps_skimage(imgs[0], imgs[ind], mask_moving=masks[ind], verbose=verbose, plot_loftr_matches=False, return_tps=False)    
         else:
-            img_moving, mask_moving = register_single_image(imgs[0], imgs[ind], mask_fixed=masks[0], mask_moving=masks[ind], smoothing=smoothing, return_tps=False, plot_loftr_matches=False, use_warp_consistency=use_warp_consistency, consistency_tolerance=consistency_tolerance, transform_type=transform_type, rotation=rotation, distortion_scale=distortion_scale, filter_strategy=filter_strategy, n_landmarks=n_landmarks, n_landmarks_tol=n_landmarks_tol, min_conf=min_conf, verbose=verbose)
+            img_moving, mask_moving = register_single_image(imgs[0], imgs[ind], mask_fixed=masks[0], mask_moving=masks[ind], smoothing=smoothing, return_tps=False, plot_loftr_matches=False, warp_consistency=warp_consistency, match_filtering=match_filtering, verbose=verbose)
 
         registered_imgs.append(img_moving)
         if return_masks:
@@ -274,22 +268,12 @@ def register_leaf_seq(
 def register_leaf_seq_sequential(
     leaf: LeafDataset, 
     smoothing: float=0.0, 
-    img_scale: str="full", 
-    pre_rotate: bool=False, 
-    erase_markers: bool=True, 
-    return_masks: bool=True, 
-    use_scaling_erosion: bool=False, 
+    return_masks: bool=True,
     use_skimage: bool=False, 
-    use_warp_consistency: bool=True, 
-    consistency_tolerance: float=10,
-    transform_type: str="rotation",
-    rotation: float=-10,
-    distortion_scale: float=0.4, 
-    filter_strategy: str="confidence", 
-    n_landmarks: int=500, 
-    n_landmarks_tol: int=50, 
-    min_conf: float=0.5, 
-    verbose: bool=False
+    image_preprocessing: dict=PREPROCESSING_DEFAULT,
+    warp_consistency: dict=CONSISTENCY_DEFAULT,
+    match_filtering: dict=FILTERING_DEFAULT,
+    verbose: bool=False,
     ):
     
     # retrieve images
@@ -300,7 +284,7 @@ def register_leaf_seq_sequential(
     if verbose:
         print("Fechting images...")
     for ind in range(leaf.n_leaves):
-        img, mask = img_moving, mask_moving = fetch_image_mask_pair(leaf, ind, img_scale=img_scale, pre_rotate=pre_rotate, erase_markers=erase_markers, use_scaling_erosion=use_scaling_erosion)
+        img, mask = img_moving, mask_moving = fetch_image_mask_pair(leaf, ind, **image_preprocessing)
         imgs.append(img)
         if return_masks:
             masks.append(mask)
@@ -346,11 +330,17 @@ def register_leaf_seq_sequential(
         else:
             mkpts0, mkpts1, confidence, _ = loftr_match(imgs[ind-j], imgs[ind], masks[ind-j], masks[ind], verbose=verbose, return_n_matches=False)
             
-            if use_warp_consistency: # filter out inconsistent matches
-                mkpts0, mkpts1, confidence = warp_consistency(imgs[ind-j], imgs[ind], masks[ind], plot_matches=False, tolerance=consistency_tolerance, transform_type=transform_type, rotation=rotation, distortion_scale=distortion_scale, verbose=verbose)
+            if warp_consistency is not None: # filter out inconsistent matches
+                mkpts0, mkpts1, confidence = check_warp_consistency(imgs[ind-j], imgs[ind], masks[ind], plot_matches=False, verbose=verbose, **warp_consistency)
 
             # reduce number of matches
-            mkpts0_filtered, mkpts1_filtered = filter_matches(filtering_strategy, mkpts0, mkpts1, confidence, imgs[ind].shape, n_target=n_landmarks, tol=n_landmarks_tol, min_conf=min_conf)
+            filtering_mapped = { # rename arguments
+                "filtering_strategy": match_filtering["filtering_strategy"],
+                "n_target": match_filtering["n_landmarks"],
+                "tol": match_filtering["n_landmarks_tol"],
+                "min_conf": match_filtering["min_conf"],
+            }
+            mkpts0_filtered, mkpts1_filtered = filter_matches(mkpts0, mkpts1, confidence, imgs[ind].shape, **filtering_mapped)
             
             # fit tps
             tps[ind] = fit_tps_torch(mkpts0_filtered, mkpts1_filtered, alpha=smoothing)
@@ -483,11 +473,11 @@ def keypoint_coverage(mask, keypoints, dist_threshold: float=40, quantile: float
 
 
 
-def semi_seq_criterion(criterion_type: str="coverage", *args, **kwargs):
+def semi_seq_criterion(criterion_type: str="coverage", params: dict={'dist_threshold': 40}, *args, **kwargs):
     if criterion_type == "coverage":
-        return keypoint_coverage(*args, **kwargs)
+        return keypoint_coverage(*args, **kwargs, **params)
     elif criterion_type == "num_conf_matches":
-        return conf_matches_amount(*args, **kwargs)
+        return conf_matches_amount(*args, **kwargs, **params)
     else:
         raise ValueError(f"Unknown criterion type '{criterion_type}'. Expected one of 'coverage' or 'num_conf_matches'.")  
 
@@ -496,25 +486,14 @@ def semi_seq_criterion(criterion_type: str="coverage", *args, **kwargs):
 
 def register_leaf_seq_semi_sequential(
     leaf: LeafDataset, 
-    criterion: str="coverage", 
-    dist_threshold: float=40,
     smoothing: float=0.0, 
-    img_scale: str="full", 
-    pre_rotate: bool=False, 
-    erase_markers: bool=True, 
-    return_masks: bool=True, 
-    use_scaling_erosion: bool=False, 
-    use_skimage: bool=False,
-    use_warp_consistency: bool=True, 
-    consistency_tolerance: float=10,
-    transform_type: str="rotation",
-    rotation: float=-10,
-    distortion_scale: float=0.4, 
-    filter_strategy: str="confidence", 
-    n_landmarks: int=500, 
-    n_landmarks_tol: int=50, 
-    min_conf: float=0.5, 
-    verbose=False
+    return_masks: bool=True,
+    use_skimage: bool=False, 
+    image_preprocessing: dict=PREPROCESSING_DEFAULT,
+    warp_consistency: dict=CONSISTENCY_DEFAULT,
+    match_filtering: dict=FILTERING_DEFAULT,
+    semi_sequential_criterion: dict=CRITERION_DEFAULT,
+    verbose: bool=False,
     ):
     
     # retrieve images
@@ -525,7 +504,7 @@ def register_leaf_seq_semi_sequential(
     if verbose:
         print("Fechting images...")
     for ind in range(leaf.n_leaves):
-        img, mask = fetch_image_mask_pair(leaf, ind, img_scale=img_scale, pre_rotate=pre_rotate, erase_markers=erase_markers, use_scaling_erosion=use_scaling_erosion)
+        img, mask = fetch_image_mask_pair(leaf, ind, **image_preprocessing)
         imgs.append(img)
         if return_masks:
             masks.append(mask)
@@ -557,8 +536,8 @@ def register_leaf_seq_semi_sequential(
             mkpts0, mkpts1, confidence, _, n_matches = loftr_match(imgs[anchor[-1]], imgs[ind], masks[anchor[-1]], masks[ind], verbose=verbose, return_n_matches=True)
             # warped_moving_img, warped_moving_mask, tps[ind] = register_loftr_tps(imgs[ind-1], imgs[ind], threshold=0.5, verbose=False, plot_loftr_matches=False, warp_moving=True, return_tps=True)
             
-            if use_warp_consistency: # filter out inconsistent matches
-                mkpts0, mkpts1, confidence = warp_consistency(imgs[anchor[-1]], imgs[ind], masks[ind], plot_matches=False, tolerance=consistency_tolerance, transform_type=transform_type, rotation=rotation, distortion_scale=distortion_scale, verbose=verbose)
+            if warp_consistency is not None: # filter out inconsistent matches
+                mkpts0, mkpts1, confidence = check_warp_consistency(imgs[anchor[-1]], imgs[ind], masks[ind], plot_matches=False, verbose=verbose, **warp_consistency)
 
             if condition(confidence, conf_threshold=0.8):
                 # if condition is satisfied, warp moving image
@@ -612,15 +591,22 @@ def register_leaf_seq_semi_sequential(
         else:
             mkpts0, mkpts1, confidence, _, n_matches = loftr_match(imgs[anchor[-1]], imgs[ind], masks[anchor[-1]], masks[ind], verbose=verbose, return_n_matches=True)
                         
-            if use_warp_consistency: # filter out inconsistent matches
-                mkpts0, mkpts1, confidence = warp_consistency(imgs[anchor[-1]], imgs[ind], masks[ind], plot_matches=False, tolerance=consistency_tolerance, transform_type=transform_type, rotation=rotation, distortion_scale=distortion_scale, verbose=verbose)
+            if warp_consistency is not None: # filter out inconsistent matches
+                mkpts0, mkpts1, confidence = check_warp_consistency(imgs[anchor[-1]], imgs[ind], masks[ind], plot_matches=False, verbose=verbose, **warp_consistency)
 
             # reduce number of matches
-            mkpts0_filtered, mkpts1_filtered = filter_matches(filtering_strategy, mkpts0, mkpts1, confidence, imgs[ind].shape, n_target=n_landmarks, tol=n_landmarks_tol, min_conf=min_conf)
+            filtering_mapped = { # rename arguments
+                "filtering_strategy": match_filtering["filtering_strategy"],
+                "n_target": match_filtering["n_landmarks"],
+                "tol": match_filtering["n_landmarks_tol"],
+                "min_conf": match_filtering["min_conf"],
+            }
+            mkpts0_filtered, mkpts1_filtered = filter_matches(mkpts0, mkpts1, confidence, imgs[ind].shape, **filtering_mapped)
             
-
+            # print(semi_sequential_criterion)
             # evaluate quality criterion 
-            if semi_seq_criterion(criterion, masks[ind], mkpts1, dist_threshold=dist_threshold):
+            if semi_seq_criterion(mask=masks[ind], keypoints=mkpts1, **semi_sequential_criterion):
+            # if semi_seq_criterion(confidence=confidence, **semi_sequential_criterion):
                 
                 # if condition is satisfied, warp moving image
                 tps[ind] = fit_tps_torch(mkpts0_filtered, mkpts1_filtered, alpha=smoothing)
@@ -636,11 +622,11 @@ def register_leaf_seq_semi_sequential(
                 # register to new anchor
                 mkpts0, mkpts1, confidence, _ = loftr_match(imgs[anchor[-1]], imgs[ind], masks[anchor[-1]], masks[ind], verbose=verbose, return_n_matches=False)
 
-                if use_warp_consistency: # filter out inconsistent matches
-                    mkpts0, mkpts1, confidence = warp_consistency(imgs[anchor[-1]], imgs[ind], masks[ind], plot_matches=False, tolerance=consistency_tolerance, transform_type=transform_type, rotation=rotation, distortion_scale=distortion_scale, verbose=verbose)
+                if warp_consistency is not None: # filter out inconsistent matches
+                    mkpts0, mkpts1, confidence = check_warp_consistency(imgs[anchor[-1]], imgs[ind], masks[ind], plot_matches=False, verbose=verbose, **warp_consistency)
 
                 # reduce number of matches
-                mkpts0_filtered, mkpts1_filtered = filter_matches(filtering_strategy, mkpts0, mkpts1, confidence, imgs[ind].shape, n_target=n_landmarks, tol=n_landmarks_tol, min_conf=min_conf)
+                mkpts0_filtered, mkpts1_filtered = filter_matches(mkpts0, mkpts1, confidence, imgs[ind].shape, **filtering_mapped)
                 
                 tps[ind] = fit_tps_torch(mkpts0_filtered, mkpts1_filtered, alpha=smoothing)
             else:
@@ -674,7 +660,7 @@ def register_leaf_seq_semi_sequential(
         return registered_imgs
 
 
-def fetch_registered_image_mask_seq(leaf, registration_method, leaf_style, smoothing: float=0.5, plot_masked_images=False, plot_loftr_matches=False):
+def fetch_registered_image_mask_seq(leaf, registration_method, config):#, plot_masked_images=False, plot_loftr_matches=False):
     """
     for the given index pair, fetches registered fixed and moving image plus matching masks.
 
@@ -704,30 +690,34 @@ def fetch_registered_image_mask_seq(leaf, registration_method, leaf_style, smoot
         
     else:
         
-        if leaf_style == "Leaf ROI":
-            leaf_kwargs = {"img_scale": "roi", "erase_markers": True, "pre_rotate": False}
-        elif leaf_style == "Leaf ROI with Markers":
-            leaf_kwargs = {"img_scale": "roi", "erase_markers": False, "pre_rotate": False}
-        elif leaf_style == "Leaf ROI Pre-Rotated":
-            leaf_kwargs = {"img_scale": "roi", "erase_markers": True, "pre_rotate": True}
-        elif leaf_style == "Leaf ROI Pre-Rotated with Markers":
-            leaf_kwargs = {"img_scale": "roi", "erase_markers": False, "pre_rotate": True}
-        elif leaf_style == "Full Leaf":
-            leaf_kwargs = {"img_scale": "false", "erase_markers": True}
-        elif leaf_style == "Full Leaf with Markers":
-            leaf_kwargs = {"img_scale": "false", "erase_markers": False}
-        else:
-            raise ValueError(f'Unknown leaf style {leaf_style}')
+        # if leaf_style == "Leaf ROI":
+        #     leaf_kwargs = {"img_scale": "roi", "erase_markers": True, "pre_rotate": False}
+        # elif leaf_style == "Leaf ROI with Markers":
+        #     leaf_kwargs = {"img_scale": "roi", "erase_markers": False, "pre_rotate": False}
+        # elif leaf_style == "Leaf ROI Pre-Rotated":
+        #     leaf_kwargs = {"img_scale": "roi", "erase_markers": True, "pre_rotate": True}
+        # elif leaf_style == "Leaf ROI Pre-Rotated with Markers":
+        #     leaf_kwargs = {"img_scale": "roi", "erase_markers": False, "pre_rotate": True}
+        # elif leaf_style == "Full Leaf":
+        #     leaf_kwargs = {"img_scale": "false", "erase_markers": True}
+        # elif leaf_style == "Full Leaf with Markers":
+        #     leaf_kwargs = {"img_scale": "false", "erase_markers": False}
+        # else:
+        #     raise ValueError(f'Unknown leaf style {leaf_style}')
 
         # register
         if registration_method == "LoFTR + TPS Individual":
-            imgs, masks = register_leaf_seq(leaf, smoothing=smoothing, **leaf_kwargs)
+            if 'semi_sequential_criterion' in config:
+                config.pop('semi_sequential_criterion')
+            imgs, masks = register_leaf_seq(leaf, **config)
         elif registration_method == "LoFTR + TPS Semi-Sequential":
-            imgs, masks = register_leaf_seq_semi_sequential(leaf, smoothing=smoothing, **leaf_kwargs)
+            imgs, masks = register_leaf_seq_semi_sequential(leaf, **config)
         elif registration_method == "LoFTR + TPS Sequential":
-            imgs, masks = register_leaf_seq_sequential(leaf, smoothing=smoothing, **leaf_kwargs)
-        elif registration_method == "LoFTR + TPS Filtered Sequential":
-            imgs, masks = register_leaf_seq_sequential_filtered(leaf, smoothing=smoothing, **leaf_kwargs)
+            if 'semi_sequential_criterion' in config:
+                config.pop('semi_sequential_criterion')
+            imgs, masks = register_leaf_seq_sequential(leaf, **config)
+        # elif registration_method == "LoFTR + TPS Filtered Sequential":
+        #     imgs, masks = register_leaf_seq_sequential_filtered(leaf, smoothing=smoothing, **leaf_kwargs)
         else:
             raise ValueError(f'Unknown registration method {registration_method}')
         

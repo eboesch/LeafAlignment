@@ -602,14 +602,14 @@ def filter_matches_by_min_distance_adaptive(mkpts0, mkpts1, confidence, img_shap
     return best_0, best_1
 
 
-def filter_matches(strategy: str, mkpts0, mkpts1, confidence, img_shape, n_target: int=500, tol: int=50, min_conf: float=0.5):
-    if strategy == "confidence":
+def filter_matches(mkpts0, mkpts1, confidence, img_shape, filtering_strategy: str="confidence", n_target: int=500, tol: int=50, min_conf: float=0.5):
+    if filtering_strategy == "confidence":
         return filter_matches_by_confidence_bin_search(mkpts0, mkpts1, confidence, n_target=n_target, tol=tol, min_conf=min_conf)
-    elif strategy == "grid":
+    elif filtering_strategy == "grid":
         return filter_matches_by_grid_adaptive(mkpts0, mkpts1, confidence, img_shape, n_target=n_target, tol=tol, min_conf=min_conf)
-    elif strategy == "clusters":
+    elif filtering_strategy == "clusters":
         return filter_matches_by_cluster(mkpts0, mkpts1, confidence, min_conf=min_conf, n_clusters=n_target)
-    elif strategy == "min_distance":
+    elif filtering_strategy == "min_distance":
         return filter_matches_by_min_distance_adaptive(mkpts0, mkpts1, confidence, img_shape, n_target=n_target, tol=tol, min_conf=min_conf)
     else:
         raise ValueError(f"Unknown filtering strategy {strategy}. Expected on of 'confidence', 'grid', 'clusters', 'min_distance'.")
@@ -705,29 +705,28 @@ def plot_cycle_matches(img1, img2, img3, kpts12_1, kpts12_2, kpts23_2, kpts23_3,
     ax.axis('off')
     plt.show()
 
-def warp_consistency(
+def check_warp_consistency(
     img_fixed, 
     img_moving, 
     mask_moving, 
     plot_matches: bool=False, 
-    tolerance: float=10, 
-    transform_type: str="rotation", 
-    rotation: float=-10, 
-    distortion_scale: float=0.4, 
+    consistency_tolerance: float=10, 
+    transform: dict={'type': 'rotation', 'params': {'rotation': -10}},
+    # transform_type: str="rotation", 
+    # rotation: float=-10, 
+    # distortion_scale: float=0.4, 
     verbose: bool=False
     ):
-    
-    
-    
+        
 
     img1 = img_fixed
     img2 = img_moving
     img2_mask = mask_moving
-    if transform_type == "rotation":
-        out = affine_warp_expand(img2, img2_mask, rot_angle_deg=rotation)
+    if transform["type"] == "rotation":
+        out = affine_warp_expand(img2, img2_mask, rot_angle_deg=transform['params']['rotation'])
         img3 = out["imgs"]
-    elif transform_type == "homography":
-        hom = RandomHomography(img_fixed.shape[2], img_fixed.shape[3], distortion_scale=distortion_scale)
+    elif transform["type"] == "homography":
+        hom = RandomHomography(img_fixed.shape[2], img_fixed.shape[3], distortion_scale=transform['params']['distortion_scale'])
         img3 =  hom.warp_image(img_moving)
     else:
         raise ValueError(f"Unknown transform_type {transform_type}. Expected 'rotation' or 'homography'.")
@@ -762,7 +761,7 @@ def warp_consistency(
         # cycled_31_1 = cycle_matches(mkpts12_2, mkpts23_2, mkpts23_3, mkpts31_3, mkpts31_1)
         cycled_31_1 = cycle_matches(mkpts12_2, mkpts23_2, mkpts23_3, mkpts13_3, mkpts13_1)
     dists = torch.norm(mkpts12_1 - cycled_31_1, dim=1)
-    is_consistent = (dists < tolerance)
+    is_consistent = (dists < consistency_tolerance)
 
     if plot_matches:
         print(f"Number of consistent matches: {int(is_consistent.sum())}")
