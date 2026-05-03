@@ -708,6 +708,7 @@ def plot_cycle_matches(img1, img2, img3, kpts12_1, kpts12_2, kpts23_2, kpts23_3,
 def check_warp_consistency(
     img_fixed, 
     img_moving, 
+    mask_fixed,
     mask_moving, 
     plot_matches: bool=False, 
     consistency_tolerance: float=10, 
@@ -720,26 +721,29 @@ def check_warp_consistency(
         
 
     img1 = img_fixed
+    img1_mask = mask_fixed
     img2 = img_moving
     img2_mask = mask_moving
     if transform["type"] == "rotation":
         out = affine_warp_expand(img2, img2_mask, rot_angle_deg=transform['params']['rotation'])
         img3 = out["imgs"]
+        img3_mask = out["masks"]
     elif transform["type"] == "homography":
         hom = RandomHomography(img_fixed.shape[2], img_fixed.shape[3], distortion_scale=transform['params']['distortion_scale'])
-        img3 =  hom.warp_image(img_moving)
+        img3 = hom.warp_image(img_moving)
+        img3 = hom.warp_mask(mask_moving)
     else:
         raise ValueError(f"Unknown transform_type {transform_type}. Expected 'rotation' or 'homography'.")
 
     if verbose:
         print(f"Detecting LoFTR Matches...")
     # 1 -> 2
-    mkpts12_1, mkpts12_2, confidence_12, _,= loftr_match(img1, img2, verbose=verbose, return_n_matches=False)
+    mkpts12_1, mkpts12_2, confidence_12, _,= loftr_match(img1, img2, img1_mask, img2_mask, verbose=verbose, return_n_matches=False)
     # 2 -> 3
-    mkpts23_2, mkpts23_3, confidence_23, _,= loftr_match(img2, img3, verbose=verbose, return_n_matches=False)
+    mkpts23_2, mkpts23_3, confidence_23, _,= loftr_match(img2, img3, img2_mask, img3_mask, verbose=verbose, return_n_matches=False)
     # 3 -> 1
     # mkpts31_3, mkpts31_1, confidence_31, _,= loftr_match(img3, img1, verbose=verbose, return_n_matches=False)
-    mkpts13_1, mkpts13_3, confidence_13, _ = loftr_match(img1, img3, verbose=verbose, return_n_matches=False)
+    mkpts13_1, mkpts13_3, confidence_13, _ = loftr_match(img1, img3, img1_mask, img3_mask, verbose=verbose, return_n_matches=False)
     if verbose:
         print(f"Img1 -> Img2: {len(mkpts12_1)} Matches")
         print(f"Img2 -> Img3: {len(mkpts23_2)} Matches")
