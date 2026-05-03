@@ -302,6 +302,9 @@ def nmi_skimage(img1, img2, bins=100):
 
     return normalized_mutual_information(img1, img2, bins=bins)
 
+def nmi_skimage_masked(img1, img1_mask, img2, img2_mask, bins=100):
+    return nmi_skimage(img1, img2, bins=bins)
+
 
 def nmi(img1, img2, reduction="mean", bins=32, sigma_ratio=1.0, sigma=None, eps=1e-13):
     """
