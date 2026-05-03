@@ -6,6 +6,7 @@ import torch
 from typing import List
 import yaml
 from pathlib import Path
+from itertools import combinations
  
 def load_config(config_path: str = "config.yaml") -> dict:
     """Load and parse a YAML configuration file."""
@@ -652,40 +653,6 @@ def expand_affine_from_joint_contour(A, masks):
 
     return A_new, new_H, new_W
 
-# def affine_warp_expand(img, mask: torch.Tensor=None, pts: torch.Tensor=None, rot_angle_deg=0, fx=0, fy=0, scale=1.0):
-#     # add batch dim if necessary
-#     if img.dim() == 3:
-#         img = img.unsqueeze(0)
-    
-#     B,C,H,W = img.shape
-#     device = img.device
-#     tx = W*fx/100
-#     ty = H*fy/100
-#     angle = torch.tensor([rot_angle_deg], dtype=img.dtype, device=img.device).repeat(B)
-#     scale = torch.tensor([scale, scale], dtype=img.dtype, device=img.device).repeat(B,1)
-#     center = torch.tensor([[img.shape[-1]/2, img.shape[-2]/2]], dtype=img.dtype, device=img.device).repeat(B,1)
-#     translation = torch.tensor([[tx, ty]], dtype=img.dtype, device=img.device).repeat(B,1)
-#     matrix = K.geometry.transform.get_affine_matrix2d(translation, center, scale, angle)
-
-
-#     if mask is not None:
-#         matrix, new_H, new_W = expand_affine_from_contour(matrix, mask)
-#     else:
-#         matrix, new_H, new_W = expand_affine_from_corners(matrix, H, W)
-#     output_size = (new_H,new_W)
-
-#     img_warped = affine_warp_image(img, matrix, output_size) #K.geometry.transform.warp_affine(img, matrix[:,:2,:], dsize=output_size)
-#     out_dict = {"img": img_warped}
-#     if mask is not None:
-#         mask_warped = affine_warp_image(mask, matrix, output_size, interpolation="nearest")
-#         out_dict.update({"mask": mask_warped})
-
-#     if pts is not None:
-#         pts_warped = affine_warp_points(pts, matrix)
-#         out_dict.update({"pts": pts_warped})
-
-#     return out_dict
-
 def affine_warp_expand(imgs: torch.Tensor, masks: torch.Tensor=None, pts_list: List[torch.Tensor]=None, rot_angle_deg=0, fx=0, fy=0, scale=1.0, return_matrix: bool=False):
     # add batch dim if necessary
     if type(imgs) == torch.Tensor:
@@ -762,6 +729,57 @@ def find_roi_rotation(mask):
 
     return torch.tensor(angle)
 
+
+def check_orientation(kpts1, kpts2, num_samples: int = 80):
+    N = kpts1.shape[0]
+    if N < 3:
+        return 0.0
+
+    device = kpts1.device
+
+    # --- choose triplets ---
+    if N <= 20:
+        idx = torch.tensor(list(combinations(range(N), 3)), device=device)
+    else:
+        idx = torch.rand(num_samples, N, device=device).topk(3, dim=1).indices # generates random numbers and returns indices of top 3 largest
+
+
+    a1, b1, c1 = kpts1[idx[:,0]], kpts1[idx[:,1]], kpts1[idx[:,2]] # triangle vertices in img0
+    a2, b2, c2 = kpts2[idx[:,0]], kpts2[idx[:,1]], kpts2[idx[:,2]] # triangle vertices in img1
+
+    def signed_area(a, b, c):
+        return (b[:,0]-a[:,0])*(c[:,1]-a[:,1]) - \
+               (b[:,1]-a[:,1])*(c[:,0]-a[:,0])
+
+    # compute signed triangle area
+    s1 = signed_area(a1, b1, c1)
+    s2 = signed_area(a2, b2, c2)
+
+    # --- scale-aware filtering ---
+    scale = kpts1.std() + kpts2.std()
+    eps = 1e-4 * scale
+
+    valid = (s1.abs() > eps) & (s2.abs() > eps)
+
+    if valid.sum() == 0:
+        return 0.0
+
+    # filter out degenerate triangles (e.g. colinear vertices)
+    s1 = s1[valid]
+    s2 = s2[valid]
+
+    agreement = torch.sign(s1) * torch.sign(s2)
+
+    # --- weighting ---
+    weights = (s1.abs() + s2.abs())
+
+    score = (agreement * weights).sum() / weights.sum()
+
+    if score.item() < 0.3:
+        print("Flipped Orientation Suspected.")
+    return (score.item() >= 0.3)
+
+
 class RandomHomography:
     def __init__(
         self,
@@ -807,6 +825,28 @@ class RandomHomography:
 
     def warp_image_inverse(self, x):
         return self.aug.inverse(x, params=self.params)
+
+
+    # -----------------------
+    # Mask warping
+    # -----------------------
+    def warp_mask(self, mask):
+        return KT.warp_perspective(
+            mask.float(), # warp expects float
+            self.H,
+            dsize=(self.height, self.width),
+            mode="nearest",                   
+            align_corners=False,
+        ).long()
+
+    def warp_mask_inverse(self, mask):
+        return KT.warp_perspective(
+            mask.float(),                      
+            self.H_inv,
+            dsize=(self.height, self.width),
+            mode="nearest",                  
+            align_corners=False,
+        ).long()
 
     # -----------------------
     # Points warping
