@@ -8,8 +8,12 @@ import skimage as ski
 import math
 from sklearn.cluster import KMeans
 from torch_tps import ThinPlateSpline
-from utils import convert_image_to_tensor, group_by_argmax, affine_warp_expand
+from utils import convert_image_to_tensor, group_by_argmax, affine, affine_warp_expand, check_orientation
 from plotting import plot_matches_conf, plot_match_coverage
+
+CONSISTENCY_DEFAULT = None # {'consistency_tolerance': 10, 'transform': {'type': 'rotation', 'params': {'rotation': -10}}}
+FILTERING_DEFAULT = {'filtering_strategy': 'confidence', 'n_landmarks': 500, 'n_landmarks_tol': 50, 'min_conf': 0.5}
+
 
 
 def load_resize_image(img_path: str, H: int=375, W: int=600):
@@ -54,7 +58,7 @@ def loftr_match(img_fix: torch.Tensor, img_mov: torch.Tensor, mask_fix: torch.Te
             mask_fix = mask_fix.unsqueeze(0)
         if mask_mov.dim() == 2:
             mask_mov = mask_mov.unsqueeze(0)
-        if mask_fix.dim() == 4:
+        if mask_fix.dim() == 4: # masks should have not batch dimension
             mask_fix = mask_fix.squeeze(0)
         if mask_mov.dim() == 4:
             mask_mov = mask_mov.squeeze(0)
@@ -89,7 +93,18 @@ def loftr_match(img_fix: torch.Tensor, img_mov: torch.Tensor, mask_fix: torch.Te
         n_inliers = None
         inliers = None
     else:
-        _, inliers = cv2.findFundamentalMat(mkpts0.cpu().numpy(), mkpts1.cpu().numpy(), cv2.USAC_MAGSAC, 0.5, 0.999, 100000)
+        # print(f"Total matches: {len(mkpts0)}")
+        # pts0 = mkpts0.detach().cpu().numpy().copy()
+        # pts1 = mkpts1.detach().cpu().numpy().copy()
+        # print("NaNs:", np.isnan(pts0).any(), np.isnan(pts1).any())
+        # print("Inf:", np.isinf(pts0).any(), np.isinf(pts1).any())
+        # print(pts0.shape, pts0.dtype)
+        # np.save("pts0.npy", pts0)
+        # np.save("pts1.npy", pts1)
+        # _, inliers = cv2.findFundamentalMat(mkpts0.detach().cpu().numpy().copy(), mkpts1.detach().cpu().numpy().copy(), cv2.FM_RANSAC)
+        # print("RANSAC worked")
+        _, inliers = cv2.findFundamentalMat(mkpts0.detach().cpu().numpy().copy(), mkpts1.detach().cpu().numpy().copy(), cv2.USAC_MAGSAC, 1.0, 0.995, 10000)
+        # print("Usac worked")
         if inliers is None:
             n_inliers = None
         else:
@@ -385,6 +400,14 @@ def filter_matches_by_confidence_bin_search(mkpts0, mkpts1, confidence, n_target
     best_0 = mkpts0[confidence > min_conf]
     best_1 = mkpts1[confidence > min_conf]
 
+    if len(best_0) <= 3: 
+        # if cutting of at confidence threshold leaves us with too few samples,
+        # TPS is no longer possible => take 4 most confident matches
+        k = min(len(mkpts0), 4)
+        print(f"Too few confident matches. Using top {k} most confident matches.")
+        top_ind = confidence.topk(k).indices
+        return mkpts0[top_ind], mkpts1[top_ind]
+
     if len(best_0) <= n_target:
         return best_0, best_1  # nothing to do
 
@@ -446,8 +469,16 @@ def filter_matches_by_grid_adaptive(mkpts0, mkpts1, confidence, img_shape, n_tar
     
     """
     
-    best_0 = mkpts0[confidence > threshold]
-    best_1 = mkpts1[confidence > threshold]
+    best_0 = mkpts0[confidence > min_conf]
+    best_1 = mkpts1[confidence > min_conf]
+
+    if len(best_0) <= 3: 
+        # if cutting of at confidence threshold leaves us with too few samples,
+        # TPS is no longer possible => take 4 most confident matches
+        k = min(len(mkpts0), 4)
+        print(f"Too few confident matches. Using top {k} most confident matches.")
+        top_ind = confidence.topk(k).indices
+        return mkpts0[top_ind], mkpts1[top_ind]
 
     if len(best_0) <= n_target:
         return best_0, best_1  # nothing to do
@@ -480,6 +511,17 @@ def filter_matches_by_cluster(mkpts0, mkpts1, confidence, min_conf: float=0.5, n
     # only consider above threshold
     mkpts0_th = mkpts0[confidence > min_conf]
     mkpts1_th = mkpts1[confidence > min_conf]
+
+    if len(mkpts0_th) <= 3: 
+        # if cutting of at confidence threshold leaves us with too few samples,
+        # TPS is no longer possible => take 4 most confident matches
+        k = min(len(mkpts0), 4)
+        print(f"Too few confident matches. Using top {k} most confident matches.")
+        top_ind = confidence.topk(k).indices
+        return mkpts0[top_ind], mkpts1[top_ind]
+
+    if len(mkpts0_th) <= n_target:
+        return mkpts0_th, mkpts1_th  # nothing to do
 
     # cluster remaining matches
     kmeans = KMeans(n_clusters=n_clusters, random_state=0, n_init="auto").fit(mkpts0_th)
@@ -575,6 +617,14 @@ def filter_matches_by_min_distance_adaptive(mkpts0, mkpts1, confidence, img_shap
     
     best_0 = mkpts0[confidence > min_conf]
     best_1 = mkpts1[confidence > min_conf]
+
+    if len(best_0) <= 3: 
+        # if cutting of at confidence threshold leaves us with too few samples,
+        # TPS is no longer possible => take 4 most confident matches
+        k = min(len(mkpts0), 4)
+        print(f"Too few confident matches. Using top {k} most confident matches.")
+        top_ind = confidence.topk(k).indices
+        return mkpts0[top_ind], mkpts1[top_ind]
 
     if len(best_0) <= n_target:
         return best_0, best_1  # nothing to do
@@ -767,13 +817,85 @@ def check_warp_consistency(
     dists = torch.norm(mkpts12_1 - cycled_31_1, dim=1)
     is_consistent = (dists < consistency_tolerance)
 
-    if plot_matches:
+    if verbose:
         print(f"Number of consistent matches: {int(is_consistent.sum())}")
         print(f"Ratio of consistent matches: {is_consistent.to(torch.float32).mean():.3f}")
         print(f"Least confident of consistent matches: {confidence_12[is_consistent].min():.3f}")
+    if plot_matches:
         _ = plot_match_coverage(img1, mkpts12_1[is_consistent], img2, mkpts12_2[is_consistent], confidence_12[is_consistent])
         # _ = plot_match_coverage(img1, cycled_31_1[is_consistent], img1, mkpts12_1[is_consistent], is_consistent[is_consistent])
 
     return mkpts12_1[is_consistent], mkpts12_2[is_consistent], confidence_12[is_consistent]
 
+
+
+def fetch_keypoints(
+    img_fixed,
+    img_moving, 
+    mask_fixed: torch.Tensor=None,
+    mask_moving: torch.Tensor=None,
+    warp_consistency: dict=CONSISTENCY_DEFAULT,
+    match_filtering: dict=FILTERING_DEFAULT,
+    verbose: bool=False,
+):
+    out_dict = {}
+
+    # find loftr matches
+    if warp_consistency is not None: 
+        # use only consistent matches
+        mkpts0, mkpts1, confidence = check_warp_consistency(img_fixed, img_moving, mask_fixed, mask_moving, plot_matches=False, verbose=verbose, **warp_consistency)
+    else:
+        mkpts0, mkpts1, confidence, _ = loftr_match(img_fixed, img_moving, mask_fixed, mask_moving, verbose=verbose, return_n_matches=False)
+
+    # check for 180 degree rotations between images
+    if not check_orientation(mkpts0, mkpts1):
+        # images are likely in different orientations -> loftr struggles
+
+        # rotate moving image        
+        # out = affine_warp_expand(imgs=img_moving, masks=mask_moving, rot_angle_deg=180)
+        # img_moving_rot = out['imgs']
+        # mask_moving_rot = out['masks']
+        img_moving_rot = affine(img_moving, rot_angle_deg=180)
+        mask_moving_rot = affine(mask_moving, rot_angle_deg=180, interpolation_mode='nearest')
+
+        # detect matches to rotated image
+        if warp_consistency is not None: 
+            # use only consistent matches
+            mkpts0_rot, mkpts1_rot, confidence_rot = check_warp_consistency(img_fixed, img_moving_rot, mask_fixed, mask_moving_rot, plot_matches=False, verbose=verbose, **warp_consistency)
+        else:
+            mkpts0_rot, mkpts1_rot, confidence_rot, _ = loftr_match(img_fixed, img_moving_rot, mask_fixed, mask_moving_rot, verbose=verbose, return_n_matches=False)
+
+        # more matches with rotated image => stick with rotated moving image
+        if len(mkpts0_rot) > len(mkpts0):
+            print("Flipped Orientation confirmed.")
+            img_moving = img_moving_rot
+            mask_moving = mask_moving_rot
+            mkpts0 = mkpts0_rot
+            mkpts1 = mkpts1_rot
+            confidence = confidence_rot
+
+            out_dict.update({"rotated_moving_img": img_moving_rot})
+            out_dict.update({"rotated_moving_mask": mask_moving_rot})
+        else:
+            print("Flipped Orientation dismissed.")
+
+    out_dict.update({"mkpts0": mkpts0})
+    out_dict.update({"mkpts1": mkpts1})
+    out_dict.update({"confidence": confidence})
+
+    # reduce number of matches
+    filtering_mapped = { # rename arguments
+        "filtering_strategy": match_filtering["filtering_strategy"],
+        "n_target": match_filtering["n_landmarks"],
+        "tol": match_filtering["n_landmarks_tol"],
+        "min_conf": match_filtering["min_conf"],
+    }
+    mkpts0_filtered, mkpts1_filtered = filter_matches(mkpts0, mkpts1, confidence, img_fixed.shape, **filtering_mapped)
+
+    out_dict.update({"mkpts0_filtered": mkpts0_filtered})
+    out_dict.update({"mkpts1_filtered": mkpts1_filtered})
+    
+
+    # return mkpts0, mkpts1, confidence, mkpts0_filtered, mkpts1_filtered, img_moving, mask_moving
+    return out_dict
 

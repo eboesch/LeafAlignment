@@ -10,12 +10,12 @@ from skimage.transform import AffineTransform
 # from plotting import plot_matches, plot_matches_conf, plot_match_coverage
 # from masking import keypoints_roi_to_image, scale_image, mask_leaf, erode_crop_leaf, crop_ROI_erode_leaf, 
 from utils import convert_image_to_tensor, match_sizes_resize, match_sizes_resize_batch, invert_list, affine_warp_expand, check_orientation
-from masking import fetch_image_mask_pair
-from loftr import loftr_match, tps_skimage, tps_skimage_confidence, register_loftr_tps, register_loftr_tps_skimage, warp_tps_skimage, warp_tps_torch, fit_tps_torch, compose_tps, filter_matches_by_confidence, filter_matches_by_min_distance, filter_matches, check_warp_consistency
+from masking import fetch_image_mask_pair, fetch_masked_image_seq
+from loftr import loftr_match, tps_skimage, tps_skimage_confidence, register_loftr_tps, register_loftr_tps_skimage, warp_tps_skimage, warp_tps_torch, fit_tps_torch, compose_tps, filter_matches_by_confidence, filter_matches_by_min_distance, filter_matches, check_warp_consistency, fetch_keypoints
 from plotting import plot_image_pair, plot_overlay, plot_matches_conf, plot_match_coverage
 from DatasetTools.LeafImageSeries import LeafDataset
 
-PREPROCESSING_DEFAULT = {'img_scale': 'full', 'pre_rotate': False, 'erase_markers': {'type': 'pixel_erosion'}}
+PREPROCESSING_DEFAULT = {'img_scale': 'full', 'pre_rotate': False, 'erase_markers': {'type': 'pixel_erosion', 'params': {}}}
 CONSISTENCY_DEFAULT = None # {'consistency_tolerance': 10, 'transform': {'type': 'rotation', 'params': {'rotation': -10}}}
 FILTERING_DEFAULT = {'filtering_strategy': 'confidence', 'n_landmarks': 500, 'n_landmarks_tol': 50, 'min_conf': 0.5}
 CRITERION_DEFAULT = {'criterion_type': 'coverage', 'params': {'dist_threshold': 40}}
@@ -155,53 +155,32 @@ def register_single_image(
                 return None
 
 
-    # find loftr matches
-    if warp_consistency is not None: 
-        # use only consistent matches
-        mkpts0, mkpts1, confidence = check_warp_consistency(img_fixed, img_moving, mask_fixed, mask_moving, plot_matches=False, verbose=verbose, **warp_consistency)
-    else:
-        mkpts0, mkpts1, confidence, _ = loftr_match(img_fixed, img_moving, mask_fixed, mask_moving, verbose=verbose, return_n_matches=False)
-
-    # check for 180 degree rotations between images
-    if not check_orientation(mkpts0, mkpts1):
-        # images are likely in different orientations -> loftr struggles
-
-        # rotate moving image        
-        out = affine_warp_expand(imgs=img_moving, masks=mask_moving, rot_angle_deg=180)
-        img_moving_rot = out['imgs']
-        mask_moving_rot = out['masks']
-
-        # detect matches to rotated image
-        if warp_consistency is not None: 
-            # use only consistent matches
-            mkpts0_rot, mkpts1_rot, confidence_rot = check_warp_consistency(img_fixed, img_moving_rot, mask_fixed, mask_moving_rot, plot_matches=False, verbose=verbose, **warp_consistency)
-        else:
-            mkpts0_rot, mkpts1_rot, confidence_rot, _ = loftr_match(img_fixed, img_moving_rot, mask_fixed, mask_moving_rot, verbose=verbose, return_n_matches=False)
-
-        # more matches with rotated image => stick with rotated moving image
-        if len(mkpts0_rot) > len(mkpts0):
-            img_moving = img_moving_rot
-            mask_moving = mask_moving_rot
-            mkpts0 = mkpts0_rot
-            mkpts1 = mkpts1_rot
-            confidence = confidence_rot
-
-
-    # reduce number of matches
-    filtering_mapped = { # rename arguments
-        "filtering_strategy": match_filtering["filtering_strategy"],
-        "n_target": match_filtering["n_landmarks"],
-        "tol": match_filtering["n_landmarks_tol"],
-        "min_conf": match_filtering["min_conf"],
-    }
-    mkpts0_filtered, mkpts1_filtered = filter_matches(mkpts0, mkpts1, confidence, img_fixed.shape, **filtering_mapped)
+    out = fetch_keypoints(
+        img_fixed,
+        img_moving, 
+        mask_fixed,
+        mask_moving,
+        warp_consistency,
+        match_filtering,
+        verbose=verbose
+    )
+    if 'rotated_moving_img' in out:
+        print("Rotation chekc")
+        img_moving = out['rotated_moving_img']
+        mask_moving = out['rotated_moving_mask']
 
     if plot_loftr_matches:
+        mkpts0 = out['mkpts0']
+        mkpts1 = out['mkpts1']
+        confidence = out['confidence']
         fig, ax = plot_matches_conf(img_fixed, mkpts0, img_moving, mkpts1, confidence, N_show=50, vertical=True)
         fig.show()
         fig, axs = plot_match_coverage(img_fixed, mkpts0, img_moving, mkpts1, confidence)
         fig.show()
     
+    mkpts0_filtered = out['mkpts0_filtered']
+    mkpts1_filtered = out['mkpts1_filtered']
+
     if len(mkpts0_filtered) > 3: # ensure there are enough keypts to compute TPS
         
         # fit tps
@@ -356,49 +335,25 @@ def register_leaf_seq_sequential(
                 registered_masks.append( warp_tps_skimage(masks[ind].bool(), coord_map, verbose=verbose) )
         
         else:
+
+            out = fetch_keypoints(
+                imgs[ind-j],
+                imgs[ind], 
+                masks[ind-j],
+                masks[ind],
+                warp_consistency,
+                match_filtering,
+                verbose=verbose
+            )
+            if 'rotated_moving_img' in out:
+                print("Rotation chekc")
+                imgs[ind] = out['rotated_moving_img']
+                masks[ind] = out['rotated_moving_mask']
             
-            # find loftr matches
-            if warp_consistency is not None: # filter out inconsistent matches
-                # use only consistent matches
-                mkpts0, mkpts1, confidence = check_warp_consistency(imgs[ind-j], imgs[ind],  masks[ind-j], masks[ind], plot_matches=False, verbose=verbose, **warp_consistency)
-            else:
-                mkpts0, mkpts1, confidence, _ = loftr_match(imgs[ind-j], imgs[ind], masks[ind-j], masks[ind], verbose=verbose, return_n_matches=False)
 
-            # check for 180 degree rotations between images
-            if not check_orientation(mkpts0, mkpts1):
-                # images are likely in different orientations -> loftr struggles
+            mkpts0_filtered = out['mkpts0_filtered']
+            mkpts1_filtered = out['mkpts1_filtered']
 
-                # rotate moving image        
-                out = affine_warp_expand(imgs=imgs[ind], masks=masks[ind], rot_angle_deg=180)
-                img_moving_rot = out['imgs']
-                mask_moving_rot = out['masks']
-
-                # detect matches to rotated image
-                if warp_consistency is not None: 
-                    # use only consistent matches
-                    mkpts0_rot, mkpts1_rot, confidence_rot = check_warp_consistency(img_fixed, img_moving_rot, mask_fixed, mask_moving_rot, plot_matches=False, verbose=verbose, **warp_consistency)
-                else:
-                    mkpts0_rot, mkpts1_rot, confidence_rot, _ = loftr_match(img_fixed, img_moving_rot, mask_fixed, mask_moving_rot, verbose=verbose, return_n_matches=False)
-
-                # more matches with rotated image => stick with rotated moving image
-                if len(mkpts0_rot) > len(mkpts0):
-                    imgs[ind] = img_moving_rot
-                    masks[ind] = mask_moving_rot
-                    mkpts0 = mkpts0_rot
-                    mkpts1 = mkpts1_rot
-                    confidence = confidence_rot
-
-
-
-            # reduce number of matches
-            filtering_mapped = { # rename arguments
-                "filtering_strategy": match_filtering["filtering_strategy"],
-                "n_target": match_filtering["n_landmarks"],
-                "tol": match_filtering["n_landmarks_tol"],
-                "min_conf": match_filtering["min_conf"],
-            }
-            mkpts0_filtered, mkpts1_filtered = filter_matches(mkpts0, mkpts1, confidence, imgs[ind].shape, **filtering_mapped)
-            
             if len(mkpts0_filtered) > 3: # ensure there are enough keypts to compute TPS
                 # fit tps
                 tps[ind] = fit_tps_torch(mkpts0_filtered, mkpts1_filtered, alpha=smoothing)
@@ -411,6 +366,8 @@ def register_leaf_seq_sequential(
                     registered_masks.append( warp_tps_torch(tps[:ind+1], masks[ind], interpolation_mode='nearest') )
             else:
                 print(f"Not enough matches for TPS found at index {ind}")
+                imgs[ind] = None # ensures that subsequent images skip this one
+                masks[ind] = None
                 registered_imgs.append(None)
                 tps[ind] = None
                 if return_masks:
@@ -654,51 +611,29 @@ def register_leaf_seq_semi_sequential(
 
         else:
             
-                        
-            if warp_consistency is not None: # filter out inconsistent matches
-                mkpts0, mkpts1, confidence = check_warp_consistency(imgs[anchor[-1]], imgs[ind], masks[anchor[-1]], masks[ind], plot_matches=False, verbose=verbose, **warp_consistency)
-            else:
-                mkpts0, mkpts1, confidence, _, n_matches = loftr_match(imgs[anchor[-1]], imgs[ind], masks[anchor[-1]], masks[ind], verbose=verbose, return_n_matches=True)
+            out = fetch_keypoints(
+                imgs[anchor[-1]],
+                imgs[ind], 
+                masks[anchor[-1]],
+                masks[ind],
+                warp_consistency,
+                match_filtering,
+                verbose=verbose
+            )
+            if 'rotated_moving_img' in out:
+                print("Rotation chekc")
+                imgs[ind] = out['rotated_moving_img']
+                masks[ind] = out['rotated_moving_mask']
 
-            # check for 180 degree rotations between images
-            if not check_orientation(mkpts0, mkpts1):
-                # images are likely in different orientations -> loftr struggles
 
-                # rotate moving image        
-                out = affine_warp_expand(imgs=imgs[ind], masks=masks[ind], rot_angle_deg=180)
-                img_moving_rot = out['imgs']
-                mask_moving_rot = out['masks']
-
-                # detect matches to rotated image
-                if warp_consistency is not None: 
-                    # use only consistent matches
-                    mkpts0_rot, mkpts1_rot, confidence_rot = check_warp_consistency(imgs[anchor[-1]], img_moving_rot, masks[anchor[-1]], mask_moving_rot, plot_matches=False, verbose=verbose, **warp_consistency)
-                else:
-                    mkpts0_rot, mkpts1_rot, confidence_rot, _ = loftr_match(imgs[anchor[-1]], img_moving_rot, masks[anchor[-1]], mask_moving_rot, verbose=verbose, return_n_matches=False)
-
-                # more matches with rotated image => stick with rotated moving image
-                if len(mkpts0_rot) > len(mkpts0):
-                    imgs[ind] = img_moving_rot
-                    masks[ind] = mask_moving_rot
-                    mkpts0 = mkpts0_rot
-                    mkpts1 = mkpts1_rot
-                    confidence = confidence_rot
-
-            # reduce number of matches
-            filtering_mapped = { # rename arguments
-                "filtering_strategy": match_filtering["filtering_strategy"],
-                "n_target": match_filtering["n_landmarks"],
-                "tol": match_filtering["n_landmarks_tol"],
-                "min_conf": match_filtering["min_conf"],
-            }
-            mkpts0_filtered, mkpts1_filtered = filter_matches(mkpts0, mkpts1, confidence, imgs[ind].shape, **filtering_mapped)
-            
             # print(semi_sequential_criterion)
             # evaluate quality criterion 
-            if semi_seq_criterion(mask=masks[ind], keypoints=mkpts1, **semi_sequential_criterion):
-            # if semi_seq_criterion(confidence=confidence, **semi_sequential_criterion):
+            if semi_seq_criterion(mask=masks[ind], keypoints=out['mkpts1'], **semi_sequential_criterion):
+            # if semi_seq_criterion(confidence=out['confidence'], **semi_sequential_criterion):
                 
                 # if condition is satisfied, warp moving image
+                mkpts0_filtered = out['mkpts0_filtered']
+                mkpts1_filtered = out['mkpts1_filtered']
                 tps[ind] = fit_tps_torch(mkpts0_filtered, mkpts1_filtered, alpha=smoothing)
                 
             elif ind != 1: # otherwise, register to a more recent image
@@ -707,47 +642,60 @@ def register_leaf_seq_semi_sequential(
                 j = ind-1
                 while imgs[j] is None: # look for most recent non-None image
                     j -= 1
-                anchor.append(j) # set new anchor
-
-                # register to new anchor
-                if warp_consistency is not None:
-                    # use only consistent matches
-                    mkpts0, mkpts1, confidence = check_warp_consistency(imgs[anchor[-1]], imgs[ind], masks[ind], plot_matches=False, verbose=verbose, **warp_consistency)
-                else:
-                    mkpts0, mkpts1, confidence, _ = loftr_match(imgs[anchor[-1]], imgs[ind], masks[anchor[-1]], masks[ind], verbose=verbose, return_n_matches=False)
-
-                # check for 180 degree rotations between images
-                if not check_orientation(mkpts0, mkpts1):
-                    # images are likely in different orientations -> loftr struggles
-
-                    # rotate moving image        
-                    out = affine_warp_expand(imgs=imgs[ind], masks=masks[ind], rot_angle_deg=180)
-                    img_moving_rot = out['imgs']
-                    mask_moving_rot = out['masks']
-
-                    # detect matches to rotated image
-                    if warp_consistency is not None: 
-                        # use only consistent matches
-                        mkpts0_rot, mkpts1_rot, confidence_rot = check_warp_consistency(imgs[anchor[-1]], img_moving_rot, masks[anchor[-1]], mask_moving_rot, plot_matches=False, verbose=verbose, **warp_consistency)
-                    else:
-                        mkpts0_rot, mkpts1_rot, confidence_rot, _ = loftr_match(imgs[anchor[-1]], img_moving_rot, masks[anchor[-1]], mask_moving_rot, verbose=verbose, return_n_matches=False)
-
-                    # more matches with rotated image => stick with rotated moving image
-                    if len(mkpts0_rot) > len(mkpts0):
-                        imgs[ind] = img_moving_rot
-                        masks[ind] = mask_moving_rot
-                        mkpts0 = mkpts0_rot
-                        mkpts1 = mkpts1_rot
-                        confidence = confidence_rot
-
-
-                # reduce number of matches
-                mkpts0_filtered, mkpts1_filtered = filter_matches(mkpts0, mkpts1, confidence, imgs[ind].shape, **filtering_mapped)
                 
-                tps[ind] = fit_tps_torch(mkpts0_filtered, mkpts1_filtered, alpha=smoothing)
+                if j != anchor[-1]: # new anchor isn't just the old one again
+                    anchor.append(j) # set new anchor
+
+                    # register to new anchor
+                    out = fetch_keypoints(
+                        imgs[anchor[-1]],
+                        imgs[ind], 
+                        masks[anchor[-1]],
+                        masks[ind],
+                        warp_consistency,
+                        match_filtering,
+                        verbose=verbose
+                    )
+                    if 'rotated_moving_img' in out:
+                        print("Rotation chekc")
+                        imgs[ind] = out['rotated_moving_img']
+                        masks[ind] = out['rotated_moving_mask']
+
+                mkpts0_filtered = out['mkpts0_filtered']
+                mkpts1_filtered = out['mkpts1_filtered']
+
+                # check if we have enough matches for tps
+                if len(mkpts0_filtered) > 3:
+                    tps[ind] = fit_tps_torch(mkpts0_filtered, mkpts1_filtered, alpha=smoothing)
+                else:
+                    print(f"Not enough matches for TPS found at index {ind}")
+                    imgs[ind] = None # to prevent other images from back-linking to this
+                    masks[ind] = None
+                    tps[ind] = None
+                    registered_imgs.append(None)                    
+                    if return_masks:
+                        registered_masks.append(None)
+                    continue
             else:
-                print(f"Warning! Only few matches found between first and second image of sequence. Using {len(mkpts0_filtered)} Matches.")
-                tps[ind] = fit_tps_torch(mkpts0_filtered, mkpts1_filtered, alpha=smoothing)
+                # print(f"Warning! Only few matches found between first and second image of sequence. Using {len(mkpts0_filtered)} Matches.")
+                mkpts0_filtered = out['mkpts0_filtered']
+                mkpts1_filtered = out['mkpts1_filtered']
+                print(f"Warning! Poor distribution of matches found between first and second image of sequence. Using {len(mkpts0_filtered)} Matches.")
+
+                # check if we have enough matches for tps
+                if len(mkpts0_filtered) > 3:
+                    tps[ind] = fit_tps_torch(mkpts0_filtered, mkpts1_filtered, alpha=smoothing)
+                else:
+                    print(f"Not enough matches for TPS found at index {ind}")
+                    imgs[ind] = None # to prevent other images from back-linking to this
+                    masks[ind] = None
+                    tps[ind] = None
+                    registered_imgs.append(None)                    
+                    if return_masks:
+                        registered_masks.append(None)
+                    continue
+
+                
 
 
             # sanity check
@@ -839,6 +787,8 @@ def fetch_registered_image_mask_seq(leaf, registration_method, config):#, plot_m
             imgs, masks = register_leaf_seq_sequential(leaf, **cfg)
         # elif registration_method == "LoFTR + TPS Filtered Sequential":
         #     imgs, masks = register_leaf_seq_sequential_filtered(leaf, smoothing=smoothing, **leaf_kwargs)
+        elif registration_method == "Baseline":
+            imgs, masks = fetch_masked_image_seq(leaf, return_masks=True, image_preprocessing=config['image_preprocessing'])
         else:
             raise ValueError(f'Unknown registration method {registration_method}')
         
