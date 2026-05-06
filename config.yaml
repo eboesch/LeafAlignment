@@ -1,4 +1,4 @@
-smoothing: 0.0
+smoothing: 0
 return_masks: True
 use_skimage: False
 verbose: False
