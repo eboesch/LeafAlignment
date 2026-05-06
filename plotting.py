@@ -263,26 +263,30 @@ def plot_overlay(img_fix, img_mov, title=None):
 
     return fig
 
-def plot_image_pair(img1, img2, img1_ind: int=None, img2_ind: int = 2, title: str=None, title_offset: float=0.86):
+def plot_image_pair(img1, img2, img1_ind: int=None, img2_ind: int=None, subtitle_1: str=None, subtitle_2: str=None, title: str=None, title_offset: float=0.86, title_size: int=20):
     if type(img1) == torch.Tensor:
         img1 = K.tensor_to_image(img1)
     if type(img2) == torch.Tensor:
         img2 = K.tensor_to_image(img2)
 
-    if img1_ind is None:
-        img1_ind = 1
-    if img2_ind is None:
-        img2_ind = 2
+    if subtitle_1 is None:        
+        if img1_ind is None:
+            img1_ind = 1
+        subtitle_1 = f"Image {img1_ind}"
+    if subtitle_2 is None:        
+        if img2_ind is None:
+            img2_ind = 2
+        subtitle_2 = f"Image {img2_ind}"
 
     fig, axs = plt.subplots(1, 2, figsize=(12,6))
     axs[0].imshow(img1)
-    axs[0].set_title(f"Image {img1_ind}")
+    axs[0].set_title(subtitle_1)
     # axs[0].axes('off')
 
     axs[1].imshow(img2)
-    axs[1].set_title(f"Image {img2_ind}")
+    axs[1].set_title(subtitle_2)
     if title is not None:
-        fig.suptitle(title, fontsize=22, y=title_offset)
+        fig.suptitle(title, fontsize=title_size, y=title_offset)
     plt.tight_layout()
     
     return fig, axs

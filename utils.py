@@ -405,7 +405,7 @@ def group_by_argmax(values: torch.Tensor, groups: torch.Tensor):
 
 # ------------- transforms ---------------------------------------
 
-def affine(img, rot_angle_deg=0, fx=0, fy=0, scale=1.0):
+def affine(img, rot_angle_deg=0, fx=0, fy=0, scale=1.0, interpolation_mode='bilinear'):
     # add batch dim if necessary
     if img.dim() == 3:
         img = img.unsqueeze(0)
@@ -418,7 +418,7 @@ def affine(img, rot_angle_deg=0, fx=0, fy=0, scale=1.0):
     center = torch.tensor([[img.shape[-1]/2, img.shape[-2]/2]], dtype=img.dtype, device=img.device).repeat(B,1)
     translation = torch.tensor([[tx, ty]], dtype=img.dtype, device=img.device).repeat(B,1)
     matrix = K.geometry.transform.get_affine_matrix2d(translation, center, scale, angle)
-    return K.geometry.transform.warp_affine(img, matrix[:,:2,:], dsize=(H, W))
+    return K.geometry.transform.warp_affine(img, matrix[:,:2,:], dsize=(H, W), mode=interpolation_mode)
 
 def adjust_color(img, brightness=0.0, contrast=0.0, saturation=1.0):
     # brightness ∈ [-1, 1], contrast > 0
@@ -540,9 +540,10 @@ def extract_mask_boundary(mask):
     # simple morphological gradient
     kernel = torch.ones(3, 3, device=mask.device)
 
-    eroded = K.morphology.erosion(mask.float(), kernel)
-    boundary = mask - eroded  # edges
+    eroded = K.morphology.erosion(mask.float(), kernel) # shrink mask a little
+    boundary = mask - eroded  # only edges remain
 
+    # create list of boundary points
     for b in range(B):
         ys, xs = torch.where(boundary[b, 0] > 0)
         pts = torch.stack([xs, ys], dim=1).float()
@@ -712,7 +713,7 @@ def affine_warp_expand(imgs: torch.Tensor, masks: torch.Tensor=None, pts_list: L
 
 
 def find_roi_rotation(mask):
-    bdry_pts = extract_mask_boundary(mask)[0] # get boundary points
+    bdry_pts = extract_mask_boundary(mask)[0] # get list of boundary points
     bdry_pts_np = bdry_pts.cpu().numpy().astype(np.float32) # convert to np for opencv
 
     # get the minimum-area bounding rectangle
@@ -730,7 +731,7 @@ def find_roi_rotation(mask):
     return torch.tensor(angle)
 
 
-def check_orientation(kpts1, kpts2, num_samples: int = 80):
+def check_orientation(kpts1, kpts2, num_samples: int = 100):
     N = kpts1.shape[0]
     if N < 3:
         return 0.0
@@ -738,7 +739,7 @@ def check_orientation(kpts1, kpts2, num_samples: int = 80):
     device = kpts1.device
 
     # --- choose triplets ---
-    if N <= 20:
+    if N <= 25:
         idx = torch.tensor(list(combinations(range(N), 3)), device=device)
     else:
         idx = torch.rand(num_samples, N, device=device).topk(3, dim=1).indices # generates random numbers and returns indices of top 3 largest
@@ -776,7 +777,7 @@ def check_orientation(kpts1, kpts2, num_samples: int = 80):
     score = (agreement * weights).sum() / weights.sum()
 
     if score.item() < 0.3:
-        print("Flipped Orientation Suspected.")
+        print("Flipped Orientation suspected.")
     return (score.item() >= 0.3)
 
 

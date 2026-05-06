@@ -3,7 +3,7 @@ import cv2
 import kornia as K
 import numpy as np
 import torch
-from utils import crop_img, convert_image_to_tensor, crop_coords_zero_borders, undo_rotation, affine_warp_expand, find_roi_rotation
+from utils import crop_img, convert_image_to_tensor, crop_coords_zero_borders, undo_rotation, affine_warp_expand, find_roi_rotation, match_sizes_resize_batch
 from loftr import loftr_match, tps_skimage
 from plotting import plot_image_pair, plot_matches, plot_matches_conf, plot_match_coverage
 from DatasetTools.LeafImageSeries import LeafDataset
@@ -358,17 +358,6 @@ def fetch_rotated_ROI(leaf, ind, erode_px: int=150, scaling: float=1.3):
 EROSION_DEFAULT = {"type": "pixel_erosion"}
 
 def fetch_image_mask_pair(leaf, ind, img_scale: str="full", pre_rotate: bool=False, erase_markers: dict=EROSION_DEFAULT):
-    # set up kwargs for erosion
-    # erosion_kwargs = {}
-    # if use_scaling_erosion:
-    #     erode_px = 0
-    # if erase_markers == False:
-    #     erode_px = 0
-    #     scaling = 1
-    # if erode_px is not None:
-    #     erosion_kwargs["erode_px"] = erode_px
-    # if scaling is not None:
-    #     erosion_kwargs["scaling"] = scaling
 
     erosion_kwargs = {}
     if erase_markers is None: # no erosion -> neutral values
@@ -379,17 +368,6 @@ def fetch_image_mask_pair(leaf, ind, img_scale: str="full", pre_rotate: bool=Fal
         if erase_markers["type"] == "scaling_erosion":
             erosion_kwargs["erode_px"] = 0 # pixel erosion overwrites scaling erosion -> cancel it
 
-        # if erase_markers["type"] == "pixel_erosion":
-        #     # use provided params, or (if none) the defaults of the underlying function
-        #     if "params" in erase_markers: # if parameters are provided, use them
-        #         erosion_kwargs = erase_markers["params"] 
-        #     else:
-        #         erosion_kwargs = {} # if no parameters are provided, use function defaults
-        # elif erase_markers["type"] == "scaling_erosion":
-
-        # else:
-        #     raise ValueError(f"Unknown erosion type {erase_markers["type"]}. Expected one of 'pixel_erosion' or 'scaling_erosion'.")
-    
 
     
     if img_scale == "full":
@@ -410,3 +388,83 @@ def fetch_image_mask_pair(leaf, ind, img_scale: str="full", pre_rotate: bool=Fal
     else:
         raise ValueError(f"Unknown image scale {img_scale}. Expected 'full' or 'roi'.")        
 
+PREPROCESSING_DEFAULT = {'img_scale': 'full', 'pre_rotate': False, 'erase_markers': {'type': 'pixel_erosion', 'params': {}}}
+
+def fetch_masked_image_seq(leaf, return_masks: bool = True, image_preprocessing: dict=PREPROCESSING_DEFAULT):
+    imgs = []
+    if return_masks:
+        masks = []
+
+    for ind in range(leaf.n_leaves):
+        img, mask = fetch_image_mask_pair(leaf, ind, **image_preprocessing)
+        imgs.append(img)
+        if return_masks:
+            masks.append(mask)
+
+    # resize
+    if return_masks:
+        imgs, masks = match_sizes_resize_batch(imgs, masks)
+        return imgs, masks
+    else:
+        imgs = match_sizes_resize_batch(imgs)
+        return imgs
+
+def fetch_unmasked_image_mask_pair(leaf, ind, img_scale: str='roi'):
+    if img_scale == "cropped":
+        img = convert_image_to_tensor(leaf.cropped_images[ind])
+        mask = convert_image_to_tensor(leaf.seg_masks[ind])
+        if (img is None) or (mask is None): 
+            print(f"Error: missing data for leaf {leaf.leaf_uid} at index {ind}")
+            return None, None
+        mask[mask!=0] = 1
+
+    elif img_scale == "roi":
+        img = convert_image_to_tensor(leaf.roi_leaf_images[ind])
+        mask = convert_image_to_tensor(leaf.roi_leaf_masks[ind])
+        if (img is None) or (mask is None): 
+            print(f"Error: missing data for leaf {leaf.leaf_uid} at index {ind}")
+            return None, None
+
+    else:
+        raise ValueError(f"Unsupported image scale {img_scale}. Choose one of 'cropped' or 'roi'.")
+
+    return img, mask
+
+
+def fetch_unmasked_image_seq(leaf, img_scale: str='roi', return_masks: bool = True):
+    if img_scale == "full":
+        if return_masks:
+            print(f"Warning! No masks available for full image")
+
+            imgs = []
+            for ind in range(leaf.n_leaves):
+                img = convert_image_to_tensor(leaf.images[ind])
+                if img is None: 
+                    print(f"Error: missing data for leaf {leaf.leaf_uid} at index {ind}")
+                imgs.append(img)
+
+            # resize
+            imgs = match_sizes_resize_batch(imgs)
+            if return_masks:
+                return imgs, None
+            else:
+                return imgs
+
+    else:
+        imgs = []
+        if return_masks:
+            masks = []
+
+        for ind in range(leaf.n_leaves):
+            img, mask = img_moving, mask_moving = fetch_unmasked_image_mask_pair(leaf, ind, img_scale)
+            imgs.append(img)
+            if return_masks:
+                masks.append(mask)
+
+        # resize
+        if return_masks:
+            imgs, masks = match_sizes_resize_batch(imgs, masks)
+            return imgs, masks
+        else:
+            imgs = match_sizes_resize_batch(imgs)
+            return imgs
