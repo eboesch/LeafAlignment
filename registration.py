@@ -9,7 +9,7 @@ from skimage.transform import AffineTransform
 # from utils import crop_img, convert_img_tensor_to_numpy, crop_coords_zero_borders, undo_rotation
 # from plotting import plot_matches, plot_matches_conf, plot_match_coverage
 # from masking import keypoints_roi_to_image, scale_image, mask_leaf, erode_crop_leaf, crop_ROI_erode_leaf, 
-from utils import convert_image_to_tensor, match_sizes_resize, match_sizes_resize_batch, invert_list, affine_warp_expand, check_orientation
+from utils import convert_image_to_tensor, match_sizes_resize, match_sizes_resize_batch, invert_list, affine_warp_expand, check_orientation, RandomHomography
 from masking import fetch_image_mask_pair, fetch_masked_image_seq
 from loftr import loftr_match, tps_skimage, tps_skimage_confidence, register_loftr_tps, register_loftr_tps_skimage, warp_tps_skimage, warp_tps_torch, fit_tps_torch, compose_tps, filter_matches_by_confidence, filter_matches_by_min_distance, filter_matches, check_warp_consistency, fetch_keypoints
 from plotting import plot_image_pair, plot_overlay, plot_matches_conf, plot_match_coverage

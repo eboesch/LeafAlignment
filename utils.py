@@ -749,6 +749,7 @@ def check_orientation(kpts1, kpts2, num_samples: int = 100):
     a2, b2, c2 = kpts2[idx[:,0]], kpts2[idx[:,1]], kpts2[idx[:,2]] # triangle vertices in img1
 
     def signed_area(a, b, c):
+        # cross product (b-a) x (c-a)
         return (b[:,0]-a[:,0])*(c[:,1]-a[:,1]) - \
                (b[:,1]-a[:,1])*(c[:,0]-a[:,0])
 
@@ -758,7 +759,7 @@ def check_orientation(kpts1, kpts2, num_samples: int = 100):
 
     # --- scale-aware filtering ---
     scale = kpts1.std() + kpts2.std()
-    eps = 1e-4 * scale
+    eps = 1e-4 * scale # set min area threshold dependent on spread of keypoints
 
     valid = (s1.abs() > eps) & (s2.abs() > eps)
 
@@ -838,7 +839,7 @@ class RandomHomography:
             dsize=(self.height, self.width),
             mode="nearest",                   
             align_corners=False,
-        ).long()
+        )#.long()
 
     def warp_mask_inverse(self, mask):
         return KT.warp_perspective(
@@ -847,7 +848,7 @@ class RandomHomography:
             dsize=(self.height, self.width),
             mode="nearest",                  
             align_corners=False,
-        ).long()
+        )#.long()
 
     # -----------------------
     # Points warping

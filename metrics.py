@@ -343,6 +343,7 @@ def nmi(img1, img2, reduction="mean", bins=32, sigma_ratio=1.0, sigma=None, eps=
     img1 = img1.unsqueeze(1)
     img2 = img2.unsqueeze(1)
 
+    # gaussian kernels
     hist1 = torch.exp(-(img1 - bin_centers)**2 / (2 * sigma**2))
     hist2 = torch.exp(-(img2 - bin_centers)**2 / (2 * sigma**2))
     # normalize kernels

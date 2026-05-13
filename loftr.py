@@ -8,7 +8,7 @@ import skimage as ski
 import math
 from sklearn.cluster import KMeans
 from torch_tps import ThinPlateSpline
-from utils import convert_image_to_tensor, group_by_argmax, affine, affine_warp_expand, check_orientation
+from utils import convert_image_to_tensor, group_by_argmax, affine, affine_warp_expand, check_orientation, RandomHomography
 from plotting import plot_matches_conf, plot_match_coverage
 
 CONSISTENCY_DEFAULT = None # {'consistency_tolerance': 10, 'transform': {'type': 'rotation', 'params': {'rotation': -10}}}
@@ -520,7 +520,7 @@ def filter_matches_by_cluster(mkpts0, mkpts1, confidence, min_conf: float=0.5, n
         top_ind = confidence.topk(k).indices
         return mkpts0[top_ind], mkpts1[top_ind]
 
-    if len(mkpts0_th) <= n_target:
+    if len(mkpts0_th) <= n_clusters:
         return mkpts0_th, mkpts1_th  # nothing to do
 
     # cluster remaining matches
@@ -635,7 +635,7 @@ def filter_matches_by_min_distance_adaptive(mkpts0, mkpts1, confidence, img_shap
 
     for i in range(20):  # enough iterations to achieve convergence
         mid = (low + high) / 2
-        filtered0, filtered1 = filter_matches_by_min_distance(mkpts0, mkpts1, confidence, min_dist=mid, max_points=max_points, threshold=threshold)
+        filtered0, filtered1 = filter_matches_by_min_distance(mkpts0, mkpts1, confidence, min_dist=mid, max_points=max_points, threshold=min_conf)
 
         if len(filtered0) > n_target:
             # too many points -> increase distance
@@ -781,7 +781,11 @@ def check_warp_consistency(
     elif transform["type"] == "homography":
         hom = RandomHomography(img_fixed.shape[2], img_fixed.shape[3], distortion_scale=transform['params']['distortion_scale'])
         img3 = hom.warp_image(img_moving)
-        img3 = hom.warp_mask(mask_moving)
+        img3_mask = hom.warp_mask(mask_moving)
+        # print("img2: ", img2.dtype)
+        # print("img2_mask: ", img2_mask.dtype)
+        # print("img3: ", img3.dtype)
+        # print("img3_mask: ", img3_mask.dtype)
     else:
         raise ValueError(f"Unknown transform_type {transform_type}. Expected 'rotation' or 'homography'.")
 
