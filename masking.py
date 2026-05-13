@@ -355,7 +355,7 @@ def fetch_rotated_ROI(leaf, ind, erode_px: int=150, scaling: float=1.3):
     
     return img, mask
 
-EROSION_DEFAULT = {"type": "pixel_erosion"}
+EROSION_DEFAULT = {"type": "pixel_erosion", 'params': {}}
 
 def fetch_image_mask_pair(leaf, ind, img_scale: str="full", pre_rotate: bool=False, erase_markers: dict=EROSION_DEFAULT):
 

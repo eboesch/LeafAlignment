@@ -8,7 +8,7 @@ import yaml
 from pathlib import Path
 from itertools import combinations
  
-def load_config(config_path: str = "config.yaml") -> dict:
+def load_config(config_path: str = "configs/default_s100.yaml") -> dict:
     """Load and parse a YAML configuration file."""
     try:
         # Use Path to handle file paths cross-platform
@@ -246,6 +246,7 @@ def match_sizes_resize_batch(imgs: List[torch.Tensor], masks: List[torch.Tensor]
     height = max(heights)
     width = max(widths)
 
+    # pad images to have same size
     padder = K.augmentation.PadTo((height, width))
 
     for i, img in enumerate(imgs):
@@ -270,6 +271,7 @@ def match_sizes_resize_batch(imgs: List[torch.Tensor], masks: List[torch.Tensor]
     H = int(height/size_factor)
     W = int(width/size_factor) 
 
+    # resize images
     for i, img in enumerate(imgs):
         if img is None: # skip None images
             continue
@@ -281,6 +283,7 @@ def match_sizes_resize_batch(imgs: List[torch.Tensor], masks: List[torch.Tensor]
     if masks is None:
         return imgs
 
+    # process masks
     for i, mask in enumerate(masks):
         if mask is None: # skip None mask
             continue
@@ -667,6 +670,8 @@ def affine_warp_expand(imgs: torch.Tensor, masks: torch.Tensor=None, pts_list: L
     B,C,H,W = imgs[0].shape
     device = imgs[0].device
     dtype = imgs[0].dtype
+
+    # set up affine transformation matrix
     tx = W*fx/100
     ty = H*fy/100
     angle = torch.tensor([rot_angle_deg], dtype=dtype, device=device).repeat(B)
@@ -675,7 +680,7 @@ def affine_warp_expand(imgs: torch.Tensor, masks: torch.Tensor=None, pts_list: L
     translation = torch.tensor([[tx, ty]], dtype=dtype, device=device).repeat(B,1)
     matrix = K.geometry.transform.get_affine_matrix2d(translation, center, scale, angle)
 
-
+    # determine new matrix and trans
     if masks is not None:
         new_matrix, new_H, new_W = expand_affine_from_joint_contour(matrix, masks)
     else:

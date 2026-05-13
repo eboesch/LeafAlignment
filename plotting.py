@@ -263,7 +263,21 @@ def plot_overlay(img_fix, img_mov, title=None):
 
     return fig
 
-def plot_image_pair(img1, img2, img1_ind: int=None, img2_ind: int=None, subtitle_1: str=None, subtitle_2: str=None, title: str=None, title_offset: float=0.86, title_size: int=20):
+def plot_img(img, title=None, figsize=(12,6), title_fontsize=20, axis=False):
+    img = convert_image_to_tensor(img)
+
+    fig = plt.figure( figsize=figsize)
+    plt.imshow(K.tensor_to_image(img))
+    if title is not None:
+        plt.title(title, fontsize=title_fontsize)
+
+    if not axis:
+        plt.axis('off')
+    
+    # fig.show()
+    return fig
+
+def plot_image_pair(img1, img2, img1_ind: int=None, img2_ind: int=None, subtitle_1: str=None, subtitle_2: str=None, subtitle_size: int=12, title: str=None, title_offset: float=0.86, title_size: int=20, figsize=(12,6)):
     if type(img1) == torch.Tensor:
         img1 = K.tensor_to_image(img1)
     if type(img2) == torch.Tensor:
@@ -278,13 +292,13 @@ def plot_image_pair(img1, img2, img1_ind: int=None, img2_ind: int=None, subtitle
             img2_ind = 2
         subtitle_2 = f"Image {img2_ind}"
 
-    fig, axs = plt.subplots(1, 2, figsize=(12,6))
+    fig, axs = plt.subplots(1, 2, figsize=figsize)
     axs[0].imshow(img1)
-    axs[0].set_title(subtitle_1)
+    axs[0].set_title(subtitle_1, fontsize=subtitle_size)
     # axs[0].axes('off')
 
     axs[1].imshow(img2)
-    axs[1].set_title(subtitle_2)
+    axs[1].set_title(subtitle_2, fontsize=subtitle_size)
     if title is not None:
         fig.suptitle(title, fontsize=title_size, y=title_offset)
     plt.tight_layout()

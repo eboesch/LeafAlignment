@@ -6,6 +6,7 @@ import numpy as np
 import torch
 import skimage as ski
 import math
+import matplotlib.pyplot as plt
 from sklearn.cluster import KMeans
 from torch_tps import ThinPlateSpline
 from utils import convert_image_to_tensor, group_by_argmax, affine, affine_warp_expand, check_orientation, RandomHomography
@@ -93,18 +94,7 @@ def loftr_match(img_fix: torch.Tensor, img_mov: torch.Tensor, mask_fix: torch.Te
         n_inliers = None
         inliers = None
     else:
-        # print(f"Total matches: {len(mkpts0)}")
-        # pts0 = mkpts0.detach().cpu().numpy().copy()
-        # pts1 = mkpts1.detach().cpu().numpy().copy()
-        # print("NaNs:", np.isnan(pts0).any(), np.isnan(pts1).any())
-        # print("Inf:", np.isinf(pts0).any(), np.isinf(pts1).any())
-        # print(pts0.shape, pts0.dtype)
-        # np.save("pts0.npy", pts0)
-        # np.save("pts1.npy", pts1)
-        # _, inliers = cv2.findFundamentalMat(mkpts0.detach().cpu().numpy().copy(), mkpts1.detach().cpu().numpy().copy(), cv2.FM_RANSAC)
-        # print("RANSAC worked")
         _, inliers = cv2.findFundamentalMat(mkpts0.detach().cpu().numpy().copy(), mkpts1.detach().cpu().numpy().copy(), cv2.USAC_MAGSAC, 1.0, 0.995, 10000)
-        # print("Usac worked")
         if inliers is None:
             n_inliers = None
         else:
@@ -711,9 +701,16 @@ def plot_cycle_matches(img1, img2, img3, kpts12_1, kpts12_2, kpts23_2, kpts23_3,
     kpts31_3 = kpts31_3[nearest_neighbors_img3[nearest_neighbors_img2[show_idx]]]
     kpts31_1 = kpts31_1[nearest_neighbors_img3[nearest_neighbors_img2[show_idx]]]
 
-    fig, ax = plt.subplots(figsize=(8,6))
+    fig, ax = plt.subplots(figsize=(14,14))
     img_list = [img1, img2, img3, img1]
-    img_set = np.concatenate([K.tensor_to_image(img1), K.tensor_to_image(img2), K.tensor_to_image(img3), K.tensor_to_image(img1)], axis=0)
+
+    max_width = max(img.shape[-1] for img in img_list)
+
+    for i, img in enumerate(img_list):
+        padder = K.augmentation.PadTo((img.shape[-2], max_width))
+        img_list[i] = padder(img)
+
+    img_set = np.concatenate([K.tensor_to_image(img) for img in img_list], axis=0)
     ax.imshow(img_set, cmap='gray')
 
     prev = 0
@@ -724,33 +721,33 @@ def plot_cycle_matches(img1, img2, img3, kpts12_1, kpts12_2, kpts23_2, kpts23_3,
     color = 'cyan'
     y_disp = 0
     for (x0, y0), (x1, y1) in zip(kpts12_1, kpts12_2):
-        ax.scatter([x0, x1 ], [y0 + y_disp, y1 + y_disp + img1.shape[2]], color=color, s=2)
-        ax.plot([x0, x1 ], [y0 + y_disp, y1 + y_disp + img1.shape[2]], color=color, linewidth=1)
+        ax.scatter([x0, x1 ], [y0 + y_disp, y1 + y_disp + img1.shape[2]], color=color, s=7)
+        ax.plot([x0, x1 ], [y0 + y_disp, y1 + y_disp + img1.shape[2]], color=color, linewidth=2)
     y_disp += img1.shape[2]
 
     for (x0, y0), (x1, y1) in zip(kpts12_2, kpts23_2):
-        ax.plot([x0, x1 ], [y0 + y_disp, y1 + y_disp], color='white', linewidth=1)
+        ax.plot([x0, x1 ], [y0 + y_disp, y1 + y_disp], color='white', linewidth=2)
 
     color = 'orange'
     for (x0, y0), (x1, y1) in zip(kpts23_2, kpts23_3):
-        ax.scatter([x0, x1 ], [y0 + y_disp, y1 + y_disp + img2.shape[2]], color=color, s=2)
-        ax.plot([x0, x1 ], [y0 + y_disp, y1 + y_disp + img2.shape[2]], color=color, linewidth=1)
+        ax.scatter([x0, x1 ], [y0 + y_disp, y1 + y_disp + img2.shape[2]], color=color, s=7)
+        ax.plot([x0, x1 ], [y0 + y_disp, y1 + y_disp + img2.shape[2]], color=color, linewidth=2)
     y_disp += img2.shape[2]
 
     for (x0, y0), (x1, y1) in zip(kpts23_3, kpts31_3):
-        ax.plot([x0, x1 ], [y0 + y_disp, y1 + y_disp], color='white', linewidth=1)
+        ax.plot([x0, x1 ], [y0 + y_disp, y1 + y_disp], color='white', linewidth=2)
 
     color = 'lime'
     for (x0, y0), (x1, y1) in zip(kpts31_3, kpts31_1):
-        ax.scatter([x0, x1 ], [y0 + y_disp, y1 + y_disp + img3.shape[2]], color=color, s=2)
-        ax.plot([x0, x1 ], [y0 + y_disp, y1 + y_disp + img3.shape[2]], color=color, linewidth=1)
+        ax.scatter([x0, x1 ], [y0 + y_disp, y1 + y_disp + img3.shape[2]], color=color, s=7)
+        ax.plot([x0, x1 ], [y0 + y_disp, y1 + y_disp + img3.shape[2]], color=color, linewidth=2)
     y_disp += img3.shape[2]
 
     for (x0, y0), (x1, y1) in zip(kpts31_1, kpts12_1):
-        ax.plot([x0, x1 ], [y0 + y_disp, y1 + y_disp], color='white', linewidth=1)
+        ax.plot([x0, x1 ], [y0 + y_disp, y1 + y_disp], color='white', linewidth=2)
 
     color = 'red'
-    ax.scatter(kpts12_1[:,0], kpts12_1[:,1] + y_disp, color=color, s=2)
+    ax.scatter(kpts12_1[:,0], kpts12_1[:,1] + y_disp, color=color, s=7)
 
     ax.axis('off')
     plt.show()
