@@ -1,20 +1,57 @@
 import kornia as K
-# import numpy as np
+import numpy as np
 import torch
 import torch.nn.functional as F
-# import skimage as ski
-from skimage.metrics import structural_similarity
-from skimage.metrics import normalized_mutual_information
+from skimage.metrics import structural_similarity, normalized_mutual_information
 from monai.metrics import compute_hausdorff_distance
+from typing import TYPE_CHECKING, Callable, Dict, Optional, Union
+
 from utils import convert_image_to_tensor, convert_img_tensor_to_numpy, weighted_average
 from loftr import warp_tps_points_torch
 
-def iou(img1, mask1, img2, mask2):
+if TYPE_CHECKING:
+    from PIL.Image import Image
+
+ImageType = Union[torch.Tensor, np.ndarray, "Image"]
+MetricFunction = Callable[..., torch.Tensor]
+
+def iou(img1: ImageType, mask1: ImageType, img2: ImageType, mask2: ImageType) -> torch.Tensor:
+    """
+    Compute intersection-over-union for binary masks.
+
+    Args:
+        img1: First image, included for signature compatibility.
+        mask1: Binary mask of the first image.
+        img2: Second image, included for signature compatibility.
+        mask2: Binary mask of the second image.
+
+    Returns:
+        Tensor containing the IoU score between the two masks.
+    """
     mask1 = convert_image_to_tensor(mask1).long()
     mask2 = convert_image_to_tensor(mask2).long()
-    return K.metrics.mean_iou(mask2, mask1, 2, eps=1e-6)[0,1]
+    return K.metrics.mean_iou(mask2, mask1, 2, eps=1e-6)[0, 1]
 
-def hausdorff(img1, img1_mask, img2, img2_mask, percentile=97):
+def hausdorff(
+    img1: ImageType,
+    img1_mask: ImageType,
+    img2: ImageType,
+    img2_mask: ImageType,
+    percentile: int = 97,
+) -> torch.Tensor:
+    """
+    Compute the Hausdorff distance between two binary masks.
+
+    Args:
+        img1: First image, included for signature compatibility.
+        img1_mask: Binary mask of the first image.
+        img2: Second image, included for signature compatibility.
+        img2_mask: Binary mask of the second image.
+        percentile: Percentile used by the Hausdorff metric.
+
+    Returns:
+        Tensor containing the Hausdorff distance.
+    """
     img1_mask = convert_image_to_tensor(img1_mask).long()
     img2_mask = convert_image_to_tensor(img2_mask).long()
 
@@ -26,25 +63,56 @@ def hausdorff(img1, img1_mask, img2, img2_mask, percentile=97):
         include_background=False,
     )
 
-def mse(img1, img2, reduction='mean'):
+def mse(img1: ImageType, img2: ImageType, reduction: str = 'mean') -> torch.Tensor:
+    """
+    Compute Mean Squared Error between two images.
+
+    Args:
+        img1: First image.
+        img2: Second image.
+        reduction: 'mean' to average over pixels, 'none' to keep per-pixel losses.
+
+    Returns:
+        Tensor of MSE values.
+    """
     img1 = convert_image_to_tensor(img1)
     img2 = convert_image_to_tensor(img2)
 
     mse_loss = torch.nn.MSELoss(reduction='none')
     loss = mse_loss(img1, img2)  # [B, C, H, W]
-    if reduction=='mean':
+    if reduction == 'mean':
         return loss.mean(dim=(1, 2, 3))
-    elif reduction=='none':
+    elif reduction == 'none':
         return loss
     else:
         raise ValueError("reduction must be either 'mean' or 'none'")
 
-def mse_masked(img1, img1_mask, img2, img2_mask, reduction="mean", mask_mode='both'):
+def mse_masked(
+    img1: ImageType,
+    img1_mask: ImageType,
+    img2: ImageType,
+    img2_mask: ImageType,
+    reduction: str = "mean",
+    mask_mode: str = 'both',
+) -> torch.Tensor:
+    """
+    Compute masked Mean Squared Error between two images.
+
+    Args:
+        img1: First image.
+        img1_mask: Binary mask for first image.
+        img2: Second image.
+        img2_mask: Binary mask for second image.
+        reduction: 'mean' to average over pixels, 'none' to keep per-pixel losses.
+        mask_mode: 'both' to require valid pixels in both masks, 'either' to use pixels valid in at least one mask.
+
+    Returns:
+        Tensor of masked MSE values.
+    """
     img1 = convert_image_to_tensor(img1)
     img2 = convert_image_to_tensor(img2)
     img1_mask = convert_image_to_tensor(img1_mask)
     img2_mask = convert_image_to_tensor(img2_mask)
-
 
     if mask_mode == 'either':
         # consider all pixels where at least one image is valid
@@ -57,23 +125,52 @@ def mse_masked(img1, img1_mask, img2, img2_mask, reduction="mean", mask_mode='bo
 
     if mask.shape[1] == 1:
         mask = K.color.grayscale_to_rgb(mask)
-        
-    # squared_diff = (img1)
-    # mse_loss = torch.nn.MSELoss(reduction=reduction)
+
     return torch.nn.functional.mse_loss(img1, img2, reduction=reduction, weight=mask)
 
-def mape(img_true, img_pred, eps: float=1e-13):
+def mape(img_true: ImageType, img_pred: ImageType, eps: float = 1e-13) -> torch.Tensor:
+    """
+    Compute Mean Absolute Percentage Error between two images.
+
+    Args:
+        img_true: Ground truth image.
+        img_pred: Predicted image.
+        eps: Small value added to denominator to avoid division by zero.
+
+    Returns:
+        Percentage error tensor.
+    """
     img_true = convert_image_to_tensor(img_true)
     img_pred = convert_image_to_tensor(img_pred)
 
     return torch.mean(torch.abs((img_true - img_pred) / (img_true + eps))) * 100
 
-def mape_masked(img_true, img_true_mask, img_pred, img_pred_mask, eps=1e-13, mask_mode='both'):
+def mape_masked(
+    img_true: ImageType,
+    img_true_mask: ImageType,
+    img_pred: ImageType,
+    img_pred_mask: ImageType,
+    eps: float = 1e-13,
+    mask_mode: str = 'both',
+) -> torch.Tensor:
+    """
+    Compute masked Mean Absolute Percentage Error between two images.
+
+    Args:
+        img_true: Ground truth image.
+        img_true_mask: Binary mask for ground truth image.
+        img_pred: Predicted image.
+        img_pred_mask: Binary mask for predicted image.
+        eps: Small value added to denominator to avoid division by zero.
+        mask_mode: 'both' to require valid pixels in both masks, 'either' to use pixels valid in at least one mask.
+
+    Returns:
+        Percentage error tensor.
+    """
     img_true = convert_image_to_tensor(img_true)
     img_pred = convert_image_to_tensor(img_pred)
     img_true_mask = convert_image_to_tensor(img_true_mask)
     img_pred_mask = convert_image_to_tensor(img_pred_mask)
-
 
     if mask_mode == 'either':
         # consider all pixels where at least one image is valid
@@ -86,17 +183,17 @@ def mape_masked(img_true, img_true_mask, img_pred, img_pred_mask, eps=1e-13, mas
 
     return weighted_average(torch.abs((img_true - img_pred) / (img_true + eps)), mask) * 100
 
-def ncc(img1, img2, reduction='mean'):
+def ncc(img1: ImageType, img2: ImageType, reduction: str = 'mean') -> torch.Tensor:
     """
     Compute Normalized Cross-Correlation (NCC) between two images.
 
     Args:
-        img1, img2: Input images (H x W x C or tensors).
-        reduction: 'mean' for scalar NCC over the entire image,
-                   'none' for per-pixel NCC map.
+        img1: First image. (H x W x C or tensors)
+        img2: Second image.
+        reduction: 'mean' for scalar NCC over the entire image, 'none' for per-pixel NCC map.
 
     Returns:
-        Scalar NCC if reduction='mean', else a tensor of the same shape as input.
+        Scalar NCC tensor if reduction='mean', else a per-pixel NCC tensor.
     """
     img1 = convert_image_to_tensor(img1)
     img2 = convert_image_to_tensor(img2)
@@ -122,9 +219,30 @@ def ncc(img1, img2, reduction='mean'):
 
     else:
         raise ValueError("reduction must be either 'mean' or 'none'")
-        
 
-def ncc_masked(img1, img1_mask, img2, img2_mask, reduction="mean",  mask_mode='both'):
+
+def ncc_masked(
+    img1: ImageType,
+    img1_mask: ImageType,
+    img2: ImageType,
+    img2_mask: ImageType,
+    reduction: str = "mean",
+    mask_mode: str = 'both',
+) -> torch.Tensor:
+    """
+    Compute masked Normalized Cross-Correlation (NCC) between two images.
+
+    Args:
+        img1: First image.
+        img1_mask: Binary mask for first image.
+        img2: Second image.
+        img2_mask: Binary mask for second image.
+        reduction: 'mean' for scalar NCC, 'none' for per-pixel map.
+        mask_mode: 'both' or 'either'.
+
+    Returns:
+        Masked NCC tensor.
+    """
     img1 = convert_image_to_tensor(img1)
     img2 = convert_image_to_tensor(img2)
     img1_mask = convert_image_to_tensor(img1_mask)
@@ -144,7 +262,7 @@ def ncc_masked(img1, img1_mask, img2, img2_mask, reduction="mean",  mask_mode='b
         raise ValueError(f"Unknown mask_mode {mask_mode}. Expected 'either' or 'both'.")
 
     if torch.sum(mask) == 0:
-        raise ValueError(f"Combined mask is empty.")
+        raise ValueError("Combined mask is empty.")
 
     img1_mean = weighted_average(img1, mask)
     img2_mean = weighted_average(img2, mask)
@@ -167,15 +285,20 @@ def ncc_masked(img1, img1_mask, img2, img2_mask, reduction="mean",  mask_mode='b
         raise ValueError("reduction must be either 'mean' or 'none'")
 
 
-def local_ncc(img1, img2, window_size=9, reduction='mean'):
+def local_ncc(
+    img1: ImageType,
+    img2: ImageType,
+    window_size: int = 9,
+    reduction: str = 'mean',
+) -> torch.Tensor:
     """
     Compute Local Normalized Cross-Correlation (LNCC) between two images.
 
     Args:
-        img1, img2: Input images (H x W x C or tensors).
+        img1: First image. 
+        img2: Second image.
         window_size: Size of local window (odd integer, e.g., 9).
-        reduction: 'mean' for scalar LNCC over the entire image,
-                   'none' for per-pixel LNCC map.
+        reduction: 'mean' for scalar LNCC over the entire image, 'none' for per-pixel LNCC map.
 
     Returns:
         Scalar LNCC if reduction='mean', else a tensor of per-pixel LNCC.
@@ -229,7 +352,30 @@ def local_ncc(img1, img2, window_size=9, reduction='mean'):
         raise ValueError("reduction must be 'mean' or 'none'")
 
 
-def local_ncc_masked(img1, img1_mask, img2, img2_mask, window_size=9, mask_mode='both', reduction='mean'):
+def local_ncc_masked(
+    img1: ImageType,
+    img1_mask: ImageType,
+    img2: ImageType,
+    img2_mask: ImageType,
+    window_size: int = 9,
+    mask_mode: str = 'both',
+    reduction: str = 'mean',
+) -> torch.Tensor:
+    """
+    Compute masked Local Normalized Cross-Correlation (LNCC) between two images.
+
+    Args:
+        img1: First image.
+        img1_mask: Binary mask for first image.
+        img2: Second image.
+        img2_mask: Binary mask for second image.
+        window_size: Local neighborhood size.
+        mask_mode: 'both' or 'either'.
+        reduction: 'mean' for scalar LNCC, 'none' for per-pixel map.
+
+    Returns:
+        Masked local NCC tensor.
+    """
     img1 = convert_image_to_tensor(img1)
     img2 = convert_image_to_tensor(img2)
     img1_mask = convert_image_to_tensor(img1_mask)
@@ -296,26 +442,72 @@ def local_ncc_masked(img1, img1_mask, img2, img2_mask, window_size=9, mask_mode=
         raise ValueError("reduction must be 'mean' or 'none'")
 
 
-def nmi_skimage(img1, img2, bins=100):
+def nmi_skimage(img1: ImageType, img2: ImageType, bins: int = 100) -> float:
+    """
+    Compute normalized mutual information using scikit-image.
+
+    Args:
+        img1: First image.
+        img2: Second image.
+        bins: Number of histogram bins.
+
+    Returns:
+        Normalized mutual information score.
+    """
     img1 = convert_img_tensor_to_numpy(convert_image_to_tensor(img1))
     img2 = convert_img_tensor_to_numpy(convert_image_to_tensor(img2))
 
     return normalized_mutual_information(img1, img2, bins=bins)
 
-def nmi_skimage_masked(img1, img1_mask, img2, img2_mask, bins=100):
+def nmi_skimage_masked(
+    img1: ImageType,
+    img1_mask: ImageType,
+    img2: ImageType,
+    img2_mask: ImageType,
+    bins: int = 100,
+) -> float:
+    """
+    Compute normalized mutual information using scikit-image.
+
+    Note:
+        Mask inputs are accepted for signature compatibility but are not used.
+
+    Args:
+        img1: First image.
+        img1_mask: Binary mask for first image, included for signature compatibility.
+        img2: Second image.
+        img2_mask: Binary mask for second image, included for signature compatibility.
+        bins: Number of histogram bins.
+
+    Returns:
+        Normalized mutual information score.
+    """
     return nmi_skimage(img1, img2, bins=bins)
 
 
-def nmi(img1, img2, reduction="mean", bins=32, sigma_ratio=1.0, sigma=None, eps=1e-13):
+def nmi(
+    img1: ImageType,
+    img2: ImageType,
+    reduction: str = "mean",
+    bins: int = 32,
+    sigma_ratio: float = 1.0,
+    sigma: Optional[float] = None,
+    eps: float = 1e-13,
+) -> torch.Tensor:
     """
-    Parzen-window Normalized Mutual Information (NMI)
+    Parzen-window Normalized Mutual Information (NMI).
 
-    A, B : tensors of same shape, intensities in [0,1]
-    W    : same shape, 1 = valid pixel, 0 = invalid
-    bins : number of Parzen bins
-    sigma: Gaussian kernel width
+    Args:
+        img1: First image.
+        img2: Second image.
+        reduction: Placeholder for compatibility; only scalar output is returned.
+        bins: Number of Parzen bins.
+        sigma_ratio: Ratio used to estimate sigma if not provided.
+        sigma: Gaussian kernel width.
+        eps: Numerical stability term.
 
-    Returns: scalar NMI
+    Returns:
+        Scalar tensor containing normalized mutual information.
     """
 
     img1 = convert_image_to_tensor(img1)
@@ -373,16 +565,35 @@ def nmi(img1, img2, reduction="mean", bins=32, sigma_ratio=1.0, sigma=None, eps=
     return NMI
 
 
-def nmi_masked(img1, img1_mask, img2, img2_mask, reduction="mean", mask_mode='both', bins=32, sigma_ratio=1.0, sigma=None, eps=1e-7):
+def nmi_masked(
+    img1: ImageType,
+    img1_mask: ImageType,
+    img2: ImageType,
+    img2_mask: ImageType,
+    reduction: str = "mean",
+    mask_mode: str = 'both',
+    bins: int = 32,
+    sigma_ratio: float = 1.0,
+    sigma: Optional[float] = None,
+    eps: float = 1e-7,
+) -> torch.Tensor:
     """
-    Parzen-window Normalized Mutual Information (NMI)
+    Parzen-window Normalized Mutual Information (NMI) with masking.
 
-    A, B : tensors of same shape, intensities in [0,1]
-    W    : same shape, 1 = valid pixel, 0 = invalid
-    bins : number of Parzen bins
-    sigma: Gaussian kernel width
+    Args:
+        img1: First image.
+        img1_mask: Binary mask for first image.
+        img2: Second image.
+        img2_mask: Binary mask for second image.
+        reduction: Placeholder for compatibility; only scalar output is returned.
+        mask_mode: 'both' or 'either'.
+        bins: Number of Parzen bins.
+        sigma_ratio: Ratio used to estimate sigma if not provided.
+        sigma: Gaussian kernel width.
+        eps: Numerical stability term.
 
-    Returns: scalar NMI
+    Returns:
+        Scalar tensor containing masked normalized mutual information.
     """
 
     img1 = convert_image_to_tensor(img1)
@@ -459,10 +670,18 @@ def nmi_masked(img1, img1_mask, img2, img2_mask, reduction="mean", mask_mode='bo
     return NMI
 
 
-def histogram2d_scatter(img1, img2, bins=64, eps=1e-8):
+def histogram2d_scatter(img1: torch.Tensor, img2: torch.Tensor, bins: int = 64, eps: float = 1e-8) -> torch.Tensor:
     """
-    a, b: (H,W) or flattened tensors of equal shape
-    bins: number of histogram bins per dimension
+    Build a 2D joint histogram for two image tensors.
+
+    Args:
+        img1: First tensor of pixel values.
+        img2: Second tensor of pixel values.
+        bins: Number of histogram bins per dimension.
+        eps: Small numerical stabilizer.
+
+    Returns:
+        2D histogram tensor of shape (bins, bins).
     """
 
     # flatten
@@ -488,7 +707,18 @@ def histogram2d_scatter(img1, img2, bins=64, eps=1e-8):
 
 
 
-def mutual_information(img1, img2, bins=100):
+def mutual_information(img1: ImageType, img2: ImageType, bins: int = 100) -> torch.Tensor:
+    """
+    Compute mutual information between two images using a 2D histogram.
+
+    Args:
+        img1: First image.
+        img2: Second image.
+        bins: Number of histogram bins.
+
+    Returns:
+        Scalar mutual information tensor.
+    """
     img1 = convert_image_to_tensor(img1)
     img2 = convert_image_to_tensor(img2)
 
@@ -535,7 +765,19 @@ def mutual_information(img1, img2, bins=100):
     return mi
 
 
-def ssim_kornia(img1, img2, window_size=11, reduction='mean'):
+def ssim_kornia(img1: ImageType, img2: ImageType, window_size: int = 11, reduction: str = 'mean') -> torch.Tensor:
+    """
+    Compute Structural Similarity (SSIM) using Kornia.
+
+    Args:
+        img1: First image.
+        img2: Second image.
+        window_size: Size of the SSIM window.
+        reduction: 'mean' for average score, 'none' for full map.
+
+    Returns:
+        Tensor containing SSIM values.
+    """
     img1 = convert_image_to_tensor(img1)
     img2 = convert_image_to_tensor(img2)
 
@@ -558,7 +800,19 @@ def ssim_kornia(img1, img2, window_size=11, reduction='mean'):
         raise ValueError("reduction must be either 'mean' or 'none'")
 
 
-def ssim_skimage(img1, img2, window_size=11, return_img=False):
+def ssim_skimage(img1: ImageType, img2: ImageType, window_size: int = 11, return_img: bool = False) -> Union[float, np.ndarray]:
+    """
+    Compute Structural Similarity (SSIM) using scikit-image.
+
+    Args:
+        img1: First image.
+        img2: Second image.
+        window_size: Size of the SSIM window.
+        return_img: If True, return the full SSIM map, otherwise return a scalar score.
+
+    Returns:
+        SSIM score or full similarity map.
+    """
     img1 = convert_img_tensor_to_numpy(convert_image_to_tensor(img1))
     img2 = convert_img_tensor_to_numpy(convert_image_to_tensor(img2))
     
@@ -569,7 +823,30 @@ def ssim_skimage(img1, img2, window_size=11, return_img=False):
     return structural_similarity(img1, img2, channel_axis=-1, data_range=data_range, win_size=window_size, gaussian_weights=True, sigma=sigma, K1=K1, K2=K2, full=return_img)
 
 
-def ssim_masked(img1, img1_mask, img2, img2_mask, window_size=11, reduction='mean'):
+def ssim_masked(
+    img1: ImageType,
+    img1_mask: ImageType,
+    img2: ImageType,
+    img2_mask: ImageType,
+    window_size: int = 11,
+    reduction: str = 'mean',
+) -> torch.Tensor:
+    """
+    Compute Structural Similarity (SSIM) between two images using Kornia.
+
+    Mask inputs are accepted for API consistency, but are not currently used in computation.
+
+    Args:
+        img1: First image.
+        img1_mask: Binary mask for first image, included for signature compatibility.
+        img2: Second image.
+        img2_mask: Binary mask for second image, included for signature compatibility.
+        window_size: Size of the SSIM window.
+        reduction: 'mean' for average score, 'none' for full map.
+
+    Returns:
+        Tensor containing SSIM values.
+    """
     img1 = convert_image_to_tensor(img1)
     img2 = convert_image_to_tensor(img2)
 
@@ -582,20 +859,66 @@ def ssim_masked(img1, img1_mask, img2, img2_mask, window_size=11, reduction='mea
     else:
         raise ValueError("reduction must be either 'mean' or 'none'")
 
-def tre(kpts_fix, kpts_mov, tps, reduction: str='mean'):
+def tre(kpts_fix: torch.Tensor, kpts_mov: torch.Tensor, tps: torch.Tensor, reduction: str = 'mean') -> torch.Tensor:
+    """
+    Compute the target registration error (TRE) between keypoint sets.
+
+    Args:
+        kpts_fix: Fixed image keypoints.
+        kpts_mov: Moving image keypoints.
+        tps: Thin-plate spline transform parameters.
+        reduction: Reduction mode for MSE loss.
+
+    Returns:
+        Tensor containing the registration error.
+    """
     kpts_fix_warped = warp_tps_points_torch(tps, kpts_fix)
     mse_loss = torch.nn.MSELoss(reduction=reduction)
     return mse_loss(kpts_mov, kpts_fix_warped)
 
 
-def batch_eval_metrics(img1, img1_mask, img2, img2_mask, metrics: dict):
+def batch_eval_metrics(
+    img1: ImageType,
+    img1_mask: ImageType,
+    img2: ImageType,
+    img2_mask: ImageType,
+    metrics: Dict[str, MetricFunction],
+) -> Dict[str, float]:
+    """
+    Evaluate a dictionary of masked metrics on a pair of images.
+
+    Args:
+        img1: First image.
+        img1_mask: Binary mask for first image.
+        img2: Second image.
+        img2_mask: Binary mask for second image.
+        metrics: Mapping from metric names to metric callables.
+
+    Returns:
+        Dictionary of metric names to scalar float values.
+    """
     eval_res = {}
     for metric_name, metric_func in metrics.items():
         val = metric_func(img1, img1_mask, img2, img2_mask)
         eval_res.update({metric_name: val.item()})
     return eval_res
 
-def batch_eval_metrics_unmasked(img1, img2, metrics: dict):
+def batch_eval_metrics_unmasked(
+    img1: ImageType,
+    img2: ImageType,
+    metrics: Dict[str, MetricFunction],
+) -> Dict[str, float]:
+    """
+    Evaluate a dictionary of unmasked metrics on a pair of images.
+
+    Args:
+        img1: First image.
+        img2: Second image.
+        metrics: Mapping from metric names to metric callables.
+
+    Returns:
+        Dictionary of metric names to scalar float values.
+    """
     eval_res = {}
     for metric_name, metric_func in metrics.items():
         val = metric_func(img1, img2)

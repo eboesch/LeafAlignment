@@ -1,14 +1,9 @@
-# import os
-# import cv2
 import kornia as K
 import numpy as np
 import torch
 from tqdm import tqdm
 from skimage.transform import AffineTransform
 
-# from utils import crop_img, convert_img_tensor_to_numpy, crop_coords_zero_borders, undo_rotation
-# from plotting import plot_matches, plot_matches_conf, plot_match_coverage
-# from masking import keypoints_roi_to_image, scale_image, mask_leaf, erode_crop_leaf, crop_ROI_erode_leaf, 
 from utils import convert_image_to_tensor, match_sizes_resize, match_sizes_resize_batch, invert_list, affine_warp_expand, check_orientation, RandomHomography
 from masking import fetch_image_mask_pair, fetch_masked_image_seq
 from loftr import loftr_match, tps_skimage, tps_skimage_confidence, register_loftr_tps, register_loftr_tps_skimage, warp_tps_skimage, warp_tps_torch, fit_tps_torch, compose_tps, filter_matches_by_confidence, filter_matches_by_min_distance, filter_matches, check_warp_consistency, fetch_keypoints
@@ -22,7 +17,18 @@ CRITERION_DEFAULT = {'criterion_type': 'coverage', 'params': {'dist_threshold': 
 
 
 
-def fetch_preregistered_leaf(leaf, ind):
+def fetch_preregistered_leaf(leaf: LeafDataset, ind: int):
+    """
+    Fetches ROI registered with Piecewise Affine registration at a specified time point, and the corresponding mask.
+
+    Args:
+        leaf: leaf data of the desired leaf
+        ind: Index (i.e. point in time series) of the specific image to be fetch.
+
+    Returns:
+        torch.Tensor: image of ROI registered with Piecewise Affine registration
+        torch.Tensor: corresponding mask
+    """
     img = convert_image_to_tensor(leaf.target_images[ind])
     mask = convert_image_to_tensor(leaf.target_masks[ind])
     if (img is None) or (mask is None): 
@@ -36,7 +42,17 @@ def fetch_preregistered_leaf(leaf, ind):
 
     return img, mask
 
-def fetch_preregistered_leaf_seq(leaf):
+def fetch_preregistered_leaf_seq(leaf: LeafDataset):
+    """
+    Fetches ROI registered with Piecewise Affine registration at all time points, and the corresponding masks.
+
+    Args:
+        leaf: leaf data of the desired leaf
+
+    Returns:
+        List[torch.Tensor]: image of ROI registered with Piecewise Affine registration
+        List[torch.Tensor]: corresponding mask
+    """
     imgs = [convert_image_to_tensor(leaf.target_images[ind]) for ind in range(leaf.n_leaves)]
     masks = [convert_image_to_tensor(leaf.target_masks[ind]) for ind in range(leaf.n_leaves)]
     for i, mask in enumerate(masks):
@@ -52,10 +68,10 @@ def fetch_preregistered_leaf_seq(leaf):
 
     return imgs, masks
 
-
-def fetch_registered_image_mask_pair(leaf, fixed_img_ind, moving_img_ind, method, plot_masked_images=False, plot_loftr_matches=False):
+# TODO: update (if still needed)
+def fetch_registered_image_mask_pair(leaf: LeafDataset, fixed_img_ind: int, moving_img_ind: int, method: str, plot_masked_images: bool=False, plot_loftr_matches: bool=False):
     """
-    for the given index pair, fetches registered fixed and moving image plus matching masks.
+    For the given index pair, fetches registered fixed and moving image plus matching masks.
 
     Args:
         leaf: leaf sequence to retrieve data from
@@ -73,10 +89,10 @@ def fetch_registered_image_mask_pair(leaf, fixed_img_ind, moving_img_ind, method
         plot_loftr_matches: if True, displays diagnostic images of matches detected by LoFTR
 
     Returns:
-        fixed image
-        registered moving image
-        mask for fixed image
-        registered moving image
+        torch.Tensor: fixed image
+        torch.Tensor: registered moving image
+        torch.Tensor: mask for fixed image
+        torch.Tensor: mask for registered moving image
 
     """
     if method == "Piecewise Affine":
@@ -85,7 +101,7 @@ def fetch_registered_image_mask_pair(leaf, fixed_img_ind, moving_img_ind, method
         return img_fixed, img_moving, mask_fixed, mask_moving
         
     else:
-        
+        # fetch images
         if method == "LoFTR + TPS ROI":
             img_fixed, mask_fixed = fetch_image_mask_pair(leaf, fixed_img_ind, img_scale="roi", erase_markers=True, pre_rotate=False)
             img_moving, mask_moving = fetch_image_mask_pair(leaf, moving_img_ind, img_scale="roi", erase_markers=True, pre_rotate=False)
@@ -123,8 +139,8 @@ def fetch_registered_image_mask_pair(leaf, fixed_img_ind, moving_img_ind, method
 
 
 def register_single_image(
-    img_fixed,
-    img_moving, 
+    img_fixed: torch.Tensor,
+    img_moving: torch.Tensor, 
     mask_fixed: torch.Tensor=None,
     mask_moving: torch.Tensor=None,
     smoothing: float=0.0,     
@@ -136,9 +152,27 @@ def register_single_image(
     ):
     
     """
-    uses loftr to detect matches between the fixed and moving image, filters the matches by confidence, then uses TPS to transform the moving image
-    if a mask of the moving image is provided, it is also warped.
-    optionally the TPS transform can be returned
+    Registers moving image to fixed image.
+    Uses LoFTR to detect matches between the fixed and moving image, filters by warp consistency, reduces number of matches as specified by match_filtering, then uses TPS to transform the moving image
+    If a mask of the moving image is provided, it is also warped.
+    Optionally, the TPS transform can be returned.
+
+    Args:
+        img_fixed: fixed image
+        img_moving: moving image
+        mask_fixed: Optional mask for fixed image
+        mask_moving: Optional mask for moving image
+        smoothing: smoothing hyperparameter. higher values lead to more "rigid" transforms
+        return_tps: whether to return the fitted TPS object
+        plot_loftr_matches: whether to plot figures showing distribution of matches 
+        warp_consistency: dictionary specifying parameters for warp consistency. to disable warp consistency, set it to None.
+        match_filtering: dictionary specifying parameters for match filtering/subsampling, such as filtering strategy, target number of landmarks, and minimum confidence threshold.
+        verbose: Whether to produce detailed output (for diagnostic purposes)
+
+    Returns:
+        torch.Tensor: registered moving image
+        torch.Tensor: mask for registered moving image. Only returned if a mask for the original moving image is provided
+        (ThinPlateSpline: fitted TPS object. only returned if return_tps==True)
     """
 
     # handle missing data cases
@@ -154,7 +188,7 @@ def register_single_image(
             else:
                 return None
 
-
+    # fetch keypoints
     out = fetch_keypoints(
         img_fixed,
         img_moving, 
@@ -165,7 +199,7 @@ def register_single_image(
         verbose=verbose
     )
     if 'rotated_moving_img' in out:
-        print("Rotation chekc")
+        # print("Rotation check")
         img_moving = out['rotated_moving_img']
         mask_moving = out['rotated_moving_mask']
 
@@ -213,8 +247,8 @@ def register_single_image(
         else:
             return warped_moving_img
 
-
-def register_leaf_seq(
+# TODO: handle skimage
+def register_leaf_seq_individual(
     leaf: LeafDataset, 
     smoothing: float=0.0, 
     return_masks: bool=True,
@@ -224,6 +258,23 @@ def register_leaf_seq(
     match_filtering: dict=FILTERING_DEFAULT,
     verbose: bool=False,    
     ):
+    """
+    For the given leaf, registers all leaves using individual registration.
+
+    Args:
+        leaf:
+        smoothing: smoothing hyperparameter. higher values lead to more "rigid" transforms
+        return_masks: whether to return masks of registered images
+        use_skimage
+        image_preprocessing: dictionary specifying parameters for image preprocessing, such as image scale, whether to pre-rotate, and parameters of marker erosion
+        warp_consistency: dictionary specifying parameters for warp consistency. to disable warp consistency, set it to None.
+        match_filtering: dictionary specifying parameters for match filtering/subsampling, such as filtering strategy, target number of landmarks, and minimum confidence threshold.
+        verbose: Whether to produce detailed output (for diagnostic purposes)
+
+    Returns:
+        List[torch.Tensor]: list of registered images
+        (List[torch.Tensor]: list of masks for registered images. Only returned if return_masks==True.)
+    """
     
     # retrieve images
     if verbose:
@@ -271,7 +322,7 @@ def register_leaf_seq(
     else:
         return registered_imgs
 
-
+# TODO: handle skimage
 def register_leaf_seq_sequential(
     leaf: LeafDataset, 
     smoothing: float=0.0, 
@@ -282,6 +333,23 @@ def register_leaf_seq_sequential(
     match_filtering: dict=FILTERING_DEFAULT,
     verbose: bool=False,
     ):
+    """
+    For the given leaf, registers all leaves using sequential registration.
+
+    Args:
+        leaf:
+        smoothing: smoothing hyperparameter. higher values lead to more "rigid" transforms
+        return_masks: whether to return masks of registered images
+        use_skimage
+        image_preprocessing: dictionary specifying parameters for image preprocessing, such as image scale, whether to pre-rotate, and parameters of marker erosion
+        warp_consistency: dictionary specifying parameters for warp consistency. to disable warp consistency, set it to None.
+        match_filtering: dictionary specifying parameters for match filtering/subsampling, such as filtering strategy, target number of landmarks, and minimum confidence threshold.
+        verbose: Whether to produce detailed output (for diagnostic purposes)
+
+    Returns:
+        List[torch.Tensor]: list of registered images
+        (List[torch.Tensor]: list of masks for registered images. Only returned if return_masks==True.)
+    """
     
     # retrieve images
     imgs = []
@@ -300,7 +368,6 @@ def register_leaf_seq_sequential(
     imgs, masks = match_sizes_resize_batch(imgs, masks)
     
     tps = [None]*leaf.n_leaves
-    # registered_imgs = [imgs[0]]*leaf.n_leaves
     registered_imgs = [imgs[0]]
     if return_masks:
         registered_masks = [masks[0]]
@@ -379,84 +446,26 @@ def register_leaf_seq_sequential(
         return registered_imgs
 
 
-def register_leaf_seq_sequential_filtered(leaf: LeafDataset, smoothing: float=0.5, img_scale: str="full", pre_rotate: bool=False, erase_markers: bool=True, return_masks: bool=True, use_scaling_erosion: bool=False, use_skimage: bool=False, verbose: bool=False):
-    
-    # retrieve images
-    imgs = []
-    if return_masks:
-        masks = []
-
-    for ind in range(leaf.n_leaves):
-        img, mask = img_moving, mask_moving = fetch_image_mask_pair(leaf, ind, img_scale=img_scale, pre_rotate=pre_rotate, erase_markers=erase_markers, use_scaling_erosion=use_scaling_erosion)
-        imgs.append(img)
-        if return_masks:
-            masks.append(mask)
-
-    # resize
-    imgs, masks = match_sizes_resize_batch(imgs, masks)
-    
-    tps = [None]*leaf.n_leaves
-    registered_imgs = [imgs[0]]
-    if return_masks:
-        registered_masks = [masks[0]]
-    moving_indices = np.arange(1, leaf.n_leaves)
-    for ind in tqdm(moving_indices, "Registering Filtered Sequentially"):
-
-        if imgs[ind] is None:
-            registered_imgs.append(None)
-            if use_skimage:
-                tps[ind] = AffineTransform() # identity transform
-            else:
-                tps[ind] = None
-            if return_masks:
-                registered_masks.append(None)
-            continue
-
-        j = 1
-        while imgs[ind-j] is None:
-            j += 1
-        
-        mkpts0, mkpts1, confidence, _ = loftr_match(imgs[ind-j], imgs[ind], verbose=verbose, return_n_matches=False)
-        
-        min_dist = 80
-        max_points=None
-        threshold=0.5
-        dist_matches_fix, dist_matches_mov = filter_matches_by_min_distance(mkpts0, mkpts1, confidence, min_dist=min_dist, max_points=max_points, threshold=threshold)
-
-        if use_skimage:
-            _, tps_func = tps_skimage(dist_matches_fix, dist_matches_mov, warp_moving=False, verbose=verbose)
-            tps[ind] = tps_func
-            tps_chain = invert_list(tps, ind) # get inverted list of tps transforms
-            coord_map = compose_tps(tps_chain)
-
-            # warp images
-            registered_imgs.append( warp_tps_skimage(imgs[ind], coord_map, verbose=verbose) )
-            if return_masks:
-                # converting mask to bool makes warp use nearest-neighbor interpolation
-                registered_masks.append( warp_tps_skimage(masks[ind].bool(), coord_map, verbose=verbose) )
-
-        else:
-            tps[ind] = fit_tps_torch(dist_matches_fix, dist_matches_mov, alpha=smoothing)
-
-            # warp images
-            registered_imgs.append( warp_tps_torch(tps[:ind+1], imgs[ind]) )
-            if return_masks:
-                registered_masks.append( warp_tps_torch(tps[:ind+1], masks[ind], interpolation_mode='nearest') )
-
-    if return_masks:
-        return registered_imgs, registered_masks
-    else:
-        return registered_imgs
-
-
-def conf_matches_amount(confidence, conf_threshold: float=0.5, n_threshold=400):
+def conf_matches_amount(confidence: torch.Tensor, conf_threshold: float=0.5, n_threshold: int=400):
+    """Check whether more than n_threshold matches have confidence greater than conf_threshold"""
     # if we have more than n_threshold confident matches, return True
     out =  (torch.sum(confidence > conf_threshold) > n_threshold)
     # print(f"condition: {out}")
     return out
 
+def keypoint_coverage(mask: torch.Tensor, keypoints: torch.Tensor, dist_threshold: float=40, quantile: float=0.975):
+    """
+    Investigates how well the keypoints cover the region of interest, by computing distances to the nearest keypoint for all pixels.
 
-def keypoint_coverage(mask, keypoints, dist_threshold: float=40, quantile: float=0.975):
+    Args:
+        mask: mask of Region of Interest
+        keypoints: list of keypoints
+        dist_threshold: distance threshold value. if the specified quantile is above this value, we consider the keypoints to have poor coverage 
+        quantile: percentile to use
+
+    Returns:
+        bool: Indicates whether the keypoints have good coverage. True if the distance quantile is <= dist_threshold
+    """
 
     H, W = mask.shape[2:]
 
@@ -492,9 +501,18 @@ def keypoint_coverage(mask, keypoints, dist_threshold: float=40, quantile: float
 
     return (quantile_val <= dist_threshold)
 
-
-
 def semi_seq_criterion(criterion_type: str="coverage", params: dict={'dist_threshold': 40}, *args, **kwargs):
+    """
+    Wrapper function for resetting criterion for semi-sequential registration.
+    
+    Args: 
+        criterion_type: Which criterion to use. 'coverage' or 'num_conf_matches'.
+        params: parameters for criterion
+        *args, **kwargs: for arguments needed for the selected criterion, e.g. mask, keypoints, or confidence.
+
+    Returns:
+        bool: True if registration is considered successful (i.e. if criterion is satisfied).
+    """
     if criterion_type == "coverage":
         return keypoint_coverage(*args, **kwargs, **params)
     elif criterion_type == "num_conf_matches":
@@ -502,9 +520,7 @@ def semi_seq_criterion(criterion_type: str="coverage", params: dict={'dist_thres
     else:
         raise ValueError(f"Unknown criterion type '{criterion_type}'. Expected one of 'coverage' or 'num_conf_matches'.")  
 
-
-
-
+# TODO: handle skimage
 def register_leaf_seq_semi_sequential(
     leaf: LeafDataset, 
     smoothing: float=0.0, 
@@ -516,7 +532,24 @@ def register_leaf_seq_semi_sequential(
     semi_sequential_criterion: dict=CRITERION_DEFAULT,
     verbose: bool=False,
     ):
-    
+    """
+    For the given leaf, registers all leaves using individual registration.
+
+    Args:
+        leaf: leaf sequence to register
+        smoothing: smoothing hyperparameter. higher values lead to more "rigid" transforms
+        return_masks: whether to return masks of registered images
+        use_skimage
+        image_preprocessing: dictionary specifying parameters for image preprocessing, such as image scale, whether to pre-rotate, and parameters of marker erosion
+        warp_consistency: dictionary specifying parameters for warp consistency. to disable warp consistency, set it to None.
+        match_filtering: dictionary specifying parameters for match filtering/subsampling, such as filtering strategy, target number of landmarks, and minimum confidence threshold.
+        verbose: Whether to produce detailed output (for diagnostic purposes)
+
+    Returns:
+        List[torch.Tensor]: list of registered images
+        (List[torch.Tensor]: list of masks for registered images. Only returned if return_masks==True.)
+    """
+
     # retrieve images
     imgs = []
     if return_masks:
@@ -540,8 +573,6 @@ def register_leaf_seq_semi_sequential(
         registered_masks = [masks[0]]
     moving_indices = np.arange(1, leaf.n_leaves)
     anchor = [0]
-    # threshold = 0.5
-    # sanity = [None]*leaf.n_leaves
 
     for ind in tqdm(moving_indices, "Registering Semi-Sequentially"):
 
@@ -695,19 +726,6 @@ def register_leaf_seq_semi_sequential(
                         registered_masks.append(None)
                     continue
 
-                
-
-
-            # sanity check
-            # print(f"----- Index {ind} -----------")
-            # sanity[ind] = f"{anchor[-1]}-{ind}"
-            # relevant_sanity = [sanity[i] for i in anchor + [ind]]
-            # sanity_chain = invert_list(relevant_sanity, -1)
-            # print(f" anchors: {anchor}")
-            # print(f"full chain: {sanity}")
-            # print(f"sliced chain: {relevant_sanity}")
-            # print(f"inverted chain: {sanity_chain}")
-
             
             relevant_tps = [tps[i] for i in anchor + [ind]] # pick out transforms for relevant steps          
 
@@ -725,28 +743,23 @@ def register_leaf_seq_semi_sequential(
         return registered_imgs
 
 
-def fetch_registered_image_mask_seq(leaf, registration_method, config):#, plot_masked_images=False, plot_loftr_matches=False):
+def fetch_registered_image_mask_seq(leaf: LeafDataset, registration_method: str, config: dict):
     """
-    for the given index pair, fetches registered fixed and moving image plus matching masks.
+    For the given leaf, registers all leaves using the specified method
 
     Args:
-        leaf: leaf sequence to retrieve data from
-        fixed_img_ind: index of the fixed image
-        moving_img_ind: index of the moving image
-        method: registration to utilize
-            "Piecewise Affine": Jonas' pre-existing method
-            "Full Leaf": TPS based on LoFTR matches on full leaf
-            "Full Leaf with Markers": TPS based on LoFTR matches on full leaf, without eroding away markers
-            "Leaf ROI": TPS based on LoFTR matches only on ROI
-            "Leaf ROI with Markers": TPS based on LoFTR matches only on ROI, without eroding away markers
-            "Leaf ROI Pre-Rotated": TPS based on LoFTR matches only on ROI, where ROI is already rotated  to align with the image borders
-            "Leaf ROI Pre-Rotated with Markers": TPS based on LoFTR matches only on pre-rotated ROI, without eroding away markers
-        plot_masked_images: if True, displays images & masks after masking, before registration
-        plot_loftr_matches: if True, displays diagnostic images of matches detected by LoFTR
+        leaf: leaf sequence to register
+        registration_method: specifies which registration method to use
+            "Piecewise Affine": Jonas' pre-existing piecewise affine method
+            "LoFTR + TPS Individual": TPS based on LoFTR matches. each leaf is registered directly to the first image of the sequence.
+            "LoFTR + TPS Sequential": TPS based on LoFTR matches. each leaf is registered to the preceeding image in the sequence.
+            "LoFTR + TPS Semi-Sequential": TPS based on LoFTR matches. each leaf is registered directly to the first image of the sequence.
+            "Baseline": Baseline method. Leaf images arent truly registered, only preprocessed and rotated to be aligned with image axes.
+        config: dictionary specifying preprocessing configuration, warp consistency parameters, match filtering configurations, and the criterion for semi-sequential registration
 
     Returns:
-        List of registered images
-        List of corresponding registered masks
+        List[torch.Tensor]: List of registered images
+        List[torch.Tensor]: List of corresponding registered masks
 
     """
     if registration_method == "Piecewise Affine":
@@ -754,29 +767,12 @@ def fetch_registered_image_mask_seq(leaf, registration_method, config):#, plot_m
         return imgs, masks
         
     else:
-        
-        # if leaf_style == "Leaf ROI":
-        #     leaf_kwargs = {"img_scale": "roi", "erase_markers": True, "pre_rotate": False}
-        # elif leaf_style == "Leaf ROI with Markers":
-        #     leaf_kwargs = {"img_scale": "roi", "erase_markers": False, "pre_rotate": False}
-        # elif leaf_style == "Leaf ROI Pre-Rotated":
-        #     leaf_kwargs = {"img_scale": "roi", "erase_markers": True, "pre_rotate": True}
-        # elif leaf_style == "Leaf ROI Pre-Rotated with Markers":
-        #     leaf_kwargs = {"img_scale": "roi", "erase_markers": False, "pre_rotate": True}
-        # elif leaf_style == "Full Leaf":
-        #     leaf_kwargs = {"img_scale": "false", "erase_markers": True}
-        # elif leaf_style == "Full Leaf with Markers":
-        #     leaf_kwargs = {"img_scale": "false", "erase_markers": False}
-        # else:
-        #     raise ValueError(f'Unknown leaf style {leaf_style}')
-
-        # register
         if registration_method == "LoFTR + TPS Individual":
             # if 'semi_sequential_criterion' in config:
             #     config.pop('semi_sequential_criterion')
             cfg = config.copy()
             cfg.pop('semi_sequential_criterion', None)
-            imgs, masks = register_leaf_seq(leaf, **cfg)
+            imgs, masks = register_leaf_seq_individual(leaf, **cfg)
         elif registration_method == "LoFTR + TPS Semi-Sequential":
             imgs, masks = register_leaf_seq_semi_sequential(leaf, **config)
         elif registration_method == "LoFTR + TPS Sequential":
@@ -785,10 +781,11 @@ def fetch_registered_image_mask_seq(leaf, registration_method, config):#, plot_m
             cfg = config.copy()
             cfg.pop('semi_sequential_criterion', None)
             imgs, masks = register_leaf_seq_sequential(leaf, **cfg)
-        # elif registration_method == "LoFTR + TPS Filtered Sequential":
-        #     imgs, masks = register_leaf_seq_sequential_filtered(leaf, smoothing=smoothing, **leaf_kwargs)
         elif registration_method == "Baseline":
-            imgs, masks = fetch_masked_image_seq(leaf, return_masks=True, image_preprocessing=config['image_preprocessing'])
+            # TODO: test
+            cfg = config.copy()
+            cfg['image_preprocessing']['pre_rotate'] = True 
+            imgs, masks = fetch_masked_image_seq(leaf, return_masks=True, image_preprocessing=cfg['image_preprocessing'])
         else:
             raise ValueError(f'Unknown registration method {registration_method}')
         

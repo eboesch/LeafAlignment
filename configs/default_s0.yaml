@@ -34,7 +34,7 @@ match_filtering:
   min_conf: 0.5
 
 semi_sequential_criterion: 
-  criterion_type: "coverage" # "num_conf_matches"
+  criterion_type: "coverage"
   params:
     dist_threshold: 40
   # criterion_type: "num_conf_matches"

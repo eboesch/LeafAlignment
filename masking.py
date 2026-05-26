@@ -8,16 +8,18 @@ from loftr import loftr_match, tps_skimage
 from plotting import plot_image_pair, plot_matches, plot_matches_conf, plot_match_coverage
 from DatasetTools.LeafImageSeries import LeafDataset
 
-# ----------------- masking ------------------------------------------
-
+# --- Deprecated masking method using keypoints to obtain a mask and scaling to erode markers ---
 
 def keypoints_roi_to_image(kp_roi: np.ndarray, roi: dict):
     """
     converts the keypoint coordinates from the ROI coordinate system to the coordinate system of the full image
 
-    kp_roi: (N,2) keypoints in ROI coordinates (TXT)
-    roi: dict with rotation_matrix (2x3) and bounding_box
-    Returns: kp_full (N,2) in original image coordinates
+    Args:
+        kp_roi: (N,2) keypoints in ROI coordinates (TXT)
+        roi: dict with rotation_matrix (2x3) and bounding_box
+
+    Returns: 
+        kp_full: (N,2) keypoints in original image coordinates
     """
     if kp_roi is None:
         return None
@@ -46,20 +48,25 @@ def mask_leaf(img: torch.Tensor, keypts: np.ndarray, erode_px: int = 0, return_c
     Creates a mask based on the convex hull of the keypoints, and masks the image accordingly.
     If erode_px > 0: erodes the mask by as many pixels
 
+    Args:
+        img: image to mask
+        keypts: Array of keypoints
+        erode_px: Number of pixels to erode the mask by
+        return_center: whether to return the center of the convex hull of the keypoints
+        return_bounds: whether to return the bounds of the leaf, i.e. mins/maxs of convex hull coords.
+
     Returns:
         masked img
         mask
-
-    Optional:
-        approximate center of the leaf
-        bounds of the leaf
+        (approximate center of the leaf)
+        (bounds of the leaf)
     """
     img = convert_image_to_tensor(img)
 
     B,C,H,W = img.shape
+
     # Computes the convex hull of the keypoints.
     hull = cv2.convexHull(keypts.astype(np.int32)) # Returns ordered list of points forming a polygon that encloses all the keypoints.
-    # center = np.mean(hull, axis=0)
     mins = np.min(hull, axis=0)
     maxs = np.max(hull, axis=0)
     center = (maxs + mins)/2
@@ -89,9 +96,13 @@ def scale_image(img: torch.Tensor, scale: float, center: np.array=None):
     """
     scales up an image by a given factor
 
-    img: (C,H,W) or (B,C,H,W) torch tensor
-    scale: float >1 to enlarge
-    center: center through which to scale. if None, uses center of image.
+    Args:
+        img: Image to scale. Shape: (C,H,W) or (B,C,H,W)
+        scale: scaling factor. Choose >1 to enlarge
+        center: Optional center through which to scale. if None, uses center of image.
+
+    Returns:
+        torch.Tensor: scaled image
     """
     # Add batch dimension if necessary
     if img.dim() == 3:
@@ -119,8 +130,17 @@ def scale_image(img: torch.Tensor, scale: float, center: np.array=None):
 
 def erode_leaf_keypoints(leaf: LeafDataset, index: int, scale: float=1.2, return_mask: bool=False):
     """
-    creates a leaf mask of the full-scale image based on keypoints,
-    then erodes the background by scaling.
+    Creates a leaf mask of the full-scale image based on keypoints, then erodes the markers by scaling.
+
+    Args:
+        leaf: target leaf, containing all leaf data
+        index: index of the leaf to mask and erode
+        scale: Factor by which to scale up the image. Larger values lead to loss of more image content.
+        return_mask: Whether to return the mask
+
+    Returns:
+        masked image with eroded markers
+        (mask)
     """
     # img = available_data['images'][index]
     kpts_img = keypoints_roi_to_image(leaf.keypoints[index], leaf.rois[index])
@@ -132,11 +152,19 @@ def erode_leaf_keypoints(leaf: LeafDataset, index: int, scale: float=1.2, return
     else:
         return masked_scaled_img
 
-
 def erode_crop_leaf(leaf: LeafDataset, index: int, scale: float=1.2, return_mask: bool=False):
     """
-    creates a leaf mask based on the keypoints, and masks the leaf accordingly, 
-    then crops away all-black areas. finally erodes markers by scaling.
+    Creates a leaf mask based on the keypoints, and masks the leaf accordingly, then crops away all-black areas. Fnally erodes markers by scaling.
+
+    Args:
+        leaf: target leaf, containing all leaf data
+        index: index of the leaf to mask and erode
+        scale: Factor by which to scale up the image. Larger values lead to loss of more image content.
+        return_mask: Whether to return the mask
+
+    Returns:
+        masked image with eroded markers
+        (mask)
     """
     kpts_img = keypoints_roi_to_image(leaf.keypoints[index], leaf.rois[index])
     if kpts_img is None:
@@ -145,11 +173,16 @@ def erode_crop_leaf(leaf: LeafDataset, index: int, scale: float=1.2, return_mask
         else: 
             return None
 
+    # mask
     masked_img, mask_t, center, bounds = mask_leaf(leaf.images[index], kpts_img, erode_px=0, return_center=True, return_bounds=True)
     x_min, y_min = bounds[0]
     x_max, y_max = bounds[1]
+
+    # crop
     cropped_img, new_center = crop_img(masked_img, x_min, x_max, y_min, y_max, center)
     cropped_mask = crop_img(mask_t, x_min, x_max, y_min, y_max)
+
+    # scale and re-mask
     img_scaled = scale_image(cropped_img, scale, new_center)
     masked_scaled_img = img_scaled * cropped_mask 
     if return_mask:
@@ -157,11 +190,82 @@ def erode_crop_leaf(leaf: LeafDataset, index: int, scale: float=1.2, return_mask
     else:
         return masked_scaled_img
 
+def crop_ROI_erode_leaf(leaf, ind, scale=1.2, erode_px=60, return_mask=True):
+    """
+    Crops and rotates leaf to ROI, then creates a mask based on keypoints and erodes leaf.
+
+     Args:
+        leaf: target leaf, containing all leaf data
+        index: index of the leaf to mask and erode
+        scale: Factor by which to scale up the image. Larger values lead to loss of more image content.
+        erode_px: Number of pixels to erode the mask by. If =0, erode by scaling instead
+        return_mask: Whether to return the mask
+
+    Returns:
+        cropped, masked image with eroded markers
+        (mask)
+    """
+    img = convert_image_to_tensor(leaf.images[ind])
+    H, W = img.shape[2], img.shape[3]
+    roi = leaf.rois[ind]
+    rot_mat = roi["rotation_matrix"]
+    bbox = roi["bounding_box"]
+    keypoints = leaf.keypoints[ind]
+    if rot_mat is None or bbox is None or keypoints is None:
+        print(f"Error: missing data for leaf {leaf.leaf_uid}")
+        return None, None
+    rot_mat = np.asarray(rot_mat)
+    bbox = np.asarray(bbox)
+
+    # rotate and crop to ROI
+    img = K.geometry.transform.warp_affine(img, torch.Tensor(rot_mat).unsqueeze(0), (H, W)) #, align_corners=True)
+    img = crop_img(img, bbox[:,0].min(), bbox[:,0].max()-1, bbox[:,1].min(), bbox[:,1].max()-1)
+
+    # generate mask via keypoints and mask leaf
+    masked_img, mask_t, center = mask_leaf(img, keypoints, erode_px=erode_px, return_center=True, return_bounds=False)
+
+    # erode leaf by scaling (if necessary)
+    if erode_px == 0:    
+        img_scaled = scale_image(masked_img, scale, center)
+        masked_img = img_scaled * mask_t 
+
+    if return_mask:
+        return masked_img, mask_t
+    else:
+        return masked_img
+
+def fetch_leaves(indices: list, leaf: LeafDataset, background_type: str='Original'):
+    """
+    For each index in indices fetches the according element of the leaf series and treats the background as specified.
+
+    Background_type:
+        "Original": the full image is returned, with no preprocessing.
+        "Eroded": the full image is masked and eroded based on keypoints
+        "Eroded+Cropped": the image is masked and eroded based on keypoints and then cropped to only the ROI
+
+    Returns list of processed leaf images
+    """
+
+    if background_type == "Original":
+        imgs = [convert_image_to_tensor(leaf.images[index]) for index in indices]
+    elif background_type == "Eroded":
+        imgs = [erode_leaf_keypoints(leaf, index=index) for index in indices]
+    elif background_type == "Eroded+Cropped":
+        imgs = [erode_crop_leaf(leaf, index=index) for index in indices]
+    else:
+        raise ValueError(f"Unknown background type '{background_type}'")
+
+    return imgs
+
+# --------------------------------------------------------------------
+# Up-to-date masking method using segmentation masks and pixel erosion
+
 def erode_mask(mask: torch.Tensor, scale: float=1.2, erode_px: int=60):
     """
-    erodes mask. if erode_px > 0, the mask is eroded. otherwise, erode by scaling
+    Erodes mask. If erode_px > 0, the mask is eroded by as many pixels. Otherwise, erode by scaling.
 
-    Returns eroded mask 
+    Returns: 
+        torch.Tensor: eroded mask 
     """
 
     if erode_px > 0:
@@ -176,12 +280,13 @@ def erode_mask(mask: torch.Tensor, scale: float=1.2, erode_px: int=60):
 
     return mask
 
-
 def erode_leaf(img: torch.Tensor, mask: torch.Tensor, scale: float=1.2, erode_px: int=60, return_mask: bool=True):
     """
-    erodes leaf. if erode_px > 0, the mask is eroded. otherwise, erode by scaling
+    Erodes leaf. If erode_px > 0, the mask is eroded by as many pixels. Otherwise, erode by scaling.
 
-    Returns masked eroded leaf, optionally also returns (eroded) mask.
+    Returns:
+        torch.Tensor: masked eroded leaf
+        (torch.Tensor: eroded mask)
     """
     masked_img = img * mask
 
@@ -200,75 +305,28 @@ def erode_leaf(img: torch.Tensor, mask: torch.Tensor, scale: float=1.2, erode_px
     else:
         return out_img
 
-def crop_ROI_erode_leaf(leaf, ind, scale=1.2, erode_px=60, return_mask=True):
-    """
-    crops and rotates leaf to ROI, then creates a mask based on keypoints and erodes leaf.
-
-    Returns cropped eroded leaf, optionally also returns (eroded) mask.
-    """
-    img = convert_image_to_tensor(leaf.images[ind])
-    H, W = img.shape[2], img.shape[3]
-    roi = leaf.rois[ind]
-    rot_mat = roi["rotation_matrix"]
-    bbox = roi["bounding_box"]
-    keypoints = leaf.keypoints[ind]
-    if rot_mat is None or bbox is None or keypoints is None:
-        print(f"Error: missing data for leaf {leaf.leaf_uid}")
-        return None, None
-    rot_mat = np.asarray(rot_mat)
-    bbox = np.asarray(bbox)
-
-    # rotate and crop to ROI
-    img = K.geometry.transform.warp_affine(img, torch.Tensor(rot_mat).unsqueeze(0), (H, W)) #, align_corners=True)
-    img = crop_img(img, bbox[:,0].min(), bbox[:,0].max()-1, bbox[:,1].min(), bbox[:,1].max()-1)
-
-    # generate mask via keypoints
-    masked_img, mask_t, center = mask_leaf(img, keypoints, erode_px=erode_px, return_center=True, return_bounds=False)
-
-    # erode leaf
-    if erode_px == 0:    
-        img_scaled = scale_image(masked_img, scale, center)
-        masked_img = img_scaled * mask_t 
-
-    if return_mask:
-        return masked_img, mask_t
-    else:
-        return masked_img
-
-
-def fetch_leaves(indices: list, leaf: LeafDataset, background_type: str='Original'):
-    """
-    for each index in indices fetches to according element of the leaf series and treats the background as specified.
-
-    background_type:
-        "Original": the full image is returned, with no preprocessing.
-        "Eroded": the full image is masked and eroded based on keypoints
-        "Eroded+Cropped": the image is masked and eroded based on keypoints and then cropped to only the ROI
-    """
-
-    if background_type == "Original":
-        imgs = [convert_image_to_tensor(leaf.images[index]) for index in indices]
-    elif background_type == "Eroded":
-        imgs = [erode_leaf_keypoints(leaf, index=index) for index in indices]
-    elif background_type == "Eroded+Cropped":
-        imgs = [erode_crop_leaf(leaf, index=index) for index in indices]
-    else:
-        raise ValueError(f"Unknown background type '{background_type}'")
-
-    return imgs
-
 
 def fetch_full_unrotated_leaf(leaf: LeafDataset, ind: int, erode_px: int=200, scaling: float=1.3):
     """
-    
-    # needs cropped_images + seg_masks
+    Fetches the full leaf image and the corresponding mask, then masks out the background and erodes the markers. Finally as much all-black background as possible is cropped away.
+    This method uses the 'cropped_images' and 'seg_masks' data.
+
+    Args:
+        leaf: target leaf, containing all leaf data (namely 'cropped_imgs' and 'seg_masks')
+        index: index of the leaf to mask and erode
+        erode_px: Number of pixels to erode the mask by. If = 0, erode by scaling instead.
+        scale: Factor by which to scale up the image. Larger values lead to loss of more image content.
+
+    Returns:
+        torch.Tensor: masked image with eroded markers
+        torch.Tensor: mask
     """
     img = convert_image_to_tensor(leaf.cropped_images[ind])
     mask = convert_image_to_tensor(leaf.seg_masks[ind])
     if (img is None) or (mask is None): 
         print(f"Error: missing data for leaf {leaf.leaf_uid} at index {ind}")
         return None, None
-    mask[mask!=0] = 1
+    mask[mask!=0] = 1 # binarize
 
     # erode
     img, mask = erode_leaf(img, mask, scale=scaling, erode_px=erode_px, return_mask=True)
@@ -281,6 +339,21 @@ def fetch_full_unrotated_leaf(leaf: LeafDataset, ind: int, erode_px: int=200, sc
     return img, mask
 
 def fetch_full_rotated_leaf(leaf: LeafDataset, ind: int, erode_px: int=200, scaling: float=1.3):
+    """
+    Fetches the full leaf image and the corresponding mask, then masks out the background and erodes the markers. Then the image is pre-rotated to align the ROI and as much all-black background as possible is cropped away.
+    This method uses the 'cropped_images' and 'seg_masks' data.
+    
+    Args:
+        leaf: target leaf, containing all leaf data (namely 'cropped_imgs' and 'seg_masks')
+        index: index of the leaf to mask and erode
+        erode_px: Number of pixels to erode the mask by. If = 0, erode by scaling instead.
+        scale: Factor by which to scale up the image. Larger values lead to loss of more image content.
+
+    Returns:
+        torch.Tensor: masked image with eroded markers
+        torch.Tensor: mask
+    """
+    # fetch unrotated leaf
     img, mask = fetch_full_unrotated_leaf(leaf, ind, erode_px, scaling)
     if (img is None) or (mask is None): 
         return None, None
@@ -298,10 +371,20 @@ def fetch_full_rotated_leaf(leaf: LeafDataset, ind: int, erode_px: int=200, scal
     
     return img, mask
 
-def fetch_preprocessed_ROI(leaf, ind, erode_px: int=150, scaling: float=1.3):
+def fetch_preprocessed_ROI(leaf: LeafDataset, ind: int, erode_px: int=150, scaling: float=1.3):
     """
-    
-    # uses roi, seg_masks, det_masks, images
+    Fetches the pre-exisisting (rotated) leaf ROI and the corresponding mask, then masks out the background and erodes the markers. Finally as much all-black background as possible is cropped away.
+    This method uses the 'roi_leaf_images' and 'roi_leaf_masks' data, which internally use 'roi', 'seg_masks', 'det_masks', and 'images' data.
+
+    Args:
+        leaf: target leaf, containing all leaf data (namely 'roi_leaf_images' and 'roi_leaf_masks')
+        index: index of the leaf to mask and erode
+        erode_px: Number of pixels to erode the mask by. If = 0, erode by scaling instead.
+        scale: Factor by which to scale up the image. Larger values lead to loss of more image content.
+
+    Returns:
+        torch.Tensor: masked image with eroded markers
+        torch.Tensor: mask
     """
     img = convert_image_to_tensor(leaf.roi_leaf_images[ind])
     mask = convert_image_to_tensor(leaf.roi_leaf_masks[ind])
@@ -319,7 +402,21 @@ def fetch_preprocessed_ROI(leaf, ind, erode_px: int=150, scaling: float=1.3):
     
     return img, mask
 
-def fetch_unrotated_ROI(leaf, ind, erode_px: int=150, scaling: float=1.3):
+def fetch_unrotated_ROI(leaf: LeafDataset, ind: int, erode_px: int=150, scaling: float=1.3):
+    """
+    Fetches the unroted leaf ROI and the corresponding mask, then masks out the background and erodes the markers. Finally as much all-black background as possible is cropped away.
+    This method uses the 'roi_leaf_images' and 'roi_leaf_masks' data, which internally use 'roi', 'seg_masks', 'det_masks', and 'images' data.
+
+    Args:
+        leaf: target leaf, containing all leaf data (namely 'roi_leaf_images' and 'roi_leaf_masks')
+        index: index of the leaf to mask and erode
+        erode_px: Number of pixels to erode the mask by. If = 0, erode by scaling instead.
+        scale: Factor by which to scale up the image. Larger values lead to loss of more image content.
+
+    Returns:
+        torch.Tensor: masked image with eroded markers
+        torch.Tensor: mask
+    """    
     img, mask = fetch_preprocessed_ROI(leaf, ind, erode_px, scaling)
     if (img is None) or (mask is None): 
         return None, None
@@ -336,8 +433,21 @@ def fetch_unrotated_ROI(leaf, ind, erode_px: int=150, scaling: float=1.3):
     
     return img, mask
 
+def fetch_rotated_ROI(leaf: LeafDataset, ind: int, erode_px: int=150, scaling: float=1.3):
+    """
+    Fetches the rotated leaf ROI and the corresponding mask, then masks out the background and erodes the markers. Finally as much all-black background as possible is cropped away.
+    This method uses the 'roi_leaf_images' and 'roi_leaf_masks' data, which internally use 'roi', 'seg_masks', 'det_masks', and 'images' data.
 
-def fetch_rotated_ROI(leaf, ind, erode_px: int=150, scaling: float=1.3):
+    Args:
+        leaf: target leaf, containing all leaf data (namely 'roi_leaf_images' and 'roi_leaf_masks')
+        index: index of the leaf to mask and erode
+        erode_px: Number of pixels to erode the mask by. If = 0, erode by scaling instead.
+        scale: Factor by which to scale up the image. Larger values lead to loss of more image content.
+
+    Returns:
+        torch.Tensor: masked image with eroded markers
+        torch.Tensor: mask
+    """   
     img, mask = fetch_unrotated_ROI(leaf, ind, erode_px, scaling)
     if (img is None) or (mask is None): 
         return None, None
@@ -355,10 +465,27 @@ def fetch_rotated_ROI(leaf, ind, erode_px: int=150, scaling: float=1.3):
     
     return img, mask
 
+
 EROSION_DEFAULT = {"type": "pixel_erosion", 'params': {}}
 
-def fetch_image_mask_pair(leaf, ind, img_scale: str="full", pre_rotate: bool=False, erase_markers: dict=EROSION_DEFAULT):
+def fetch_image_mask_pair(leaf: LeafDataset, ind: int, img_scale: str="full", pre_rotate: bool=False, erase_markers: dict=EROSION_DEFAULT):
+    """
+    Fetches a preprocessed leaf image and the corresponding mask.
 
+    Args:
+        leaf: target leaf, containing all leaf data
+        index: index of the leaf to mask and erode
+        img_scale: 'full' or 'roi'. Indicates whether the full leaf or only the ROI is desired 
+        pre_rotate: Whether to pre-rotate the image (and mask) to align the ROI with the axes.
+        erase_markers: dictionary specifying how markers should be eroded. by default, 'type' is 'pixel_erosion', and the default parameters of the respective functions are used (i.e. 'params'={} )
+
+    Returns:
+        torch.Tensor: masked image with eroded markers
+        torch.Tensor: mask
+    """
+
+    # create dictionary for erosion parameters
+    # if no values are provided, use the defaults of the respective function instead
     erosion_kwargs = {}
     if erase_markers is None: # no erosion -> neutral values
         erosion_kwargs["erode_px"] = 0
@@ -367,7 +494,6 @@ def fetch_image_mask_pair(leaf, ind, img_scale: str="full", pre_rotate: bool=Fal
         erosion_kwargs = erase_markers["params"] or {}
         if erase_markers["type"] == "scaling_erosion":
             erosion_kwargs["erode_px"] = 0 # pixel erosion overwrites scaling erosion -> cancel it
-
 
     
     if img_scale == "full":
@@ -381,16 +507,29 @@ def fetch_image_mask_pair(leaf, ind, img_scale: str="full", pre_rotate: bool=Fal
 
         else:
             return fetch_unrotated_ROI(leaf, ind, **erosion_kwargs)
-    
-    # elif img_scale == "pre-registered":
-    #     return fetch_preregistered_leaf(leaf, ind)
 
     else:
         raise ValueError(f"Unknown image scale {img_scale}. Expected 'full' or 'roi'.")        
 
+
 PREPROCESSING_DEFAULT = {'img_scale': 'full', 'pre_rotate': False, 'erase_markers': {'type': 'pixel_erosion', 'params': {}}}
 
-def fetch_masked_image_seq(leaf, return_masks: bool = True, image_preprocessing: dict=PREPROCESSING_DEFAULT):
+def fetch_masked_image_seq(leaf: LeafDataset, return_masks: bool=True, image_preprocessing: dict=PREPROCESSING_DEFAULT):
+    """
+    Fetches all preprocessed leaf images and (optionally) the corresponding masks of the series. All images are resized and padded to have the same shape.
+
+    Args:
+        leaf: target leaf, containing all leaf data
+        return_masks: Whether to return the masks.
+        image_preprocessing: dictionary containing the preprocessing specifics
+            - 'img_scale': 'full' or 'roi'. Indicates whether the full leaf or only the ROI is desired 
+            - 'pre_rotate': Whether to pre-rotate the image (and mask) to align the ROI with the axes.
+            - 'erase_markers': dictionary specifying how markers should be eroded. by default, 'type' is 'pixel_erosion', and the default parameters of the respective functions are used (i.e. 'params'={} )
+
+    Returns:
+        List[torch.Tensor]: list of masked images with eroded markers
+        (List[torch.Tensor]: list of corresponding masks)
+    """
     imgs = []
     if return_masks:
         masks = []
@@ -409,7 +548,19 @@ def fetch_masked_image_seq(leaf, return_masks: bool = True, image_preprocessing:
         imgs = match_sizes_resize_batch(imgs)
         return imgs
 
-def fetch_unmasked_image_mask_pair(leaf, ind, img_scale: str='roi'):
+def fetch_unmasked_image_mask_pair(leaf: LeafDataset, ind: int, img_scale: str='roi'):
+    """
+    Fetches an unmasked leaf image and the corresponding mask.
+
+    Args:
+        leaf: target leaf, containing all leaf data
+        index: index of the leaf to mask and erode
+        img_scale: 'cropped' or 'roi'. Indicates whether the full leaf or only the ROI is desired 
+
+    Returns:
+        torch.Tensor: image
+        torch.Tensor: mask
+    """
     if img_scale == "cropped":
         img = convert_image_to_tensor(leaf.cropped_images[ind])
         mask = convert_image_to_tensor(leaf.seg_masks[ind])
@@ -430,8 +581,19 @@ def fetch_unmasked_image_mask_pair(leaf, ind, img_scale: str='roi'):
 
     return img, mask
 
+def fetch_unmasked_image_seq(leaf: LeafDataset, img_scale: str='roi', return_masks: bool = True):
+    """
+    Fetches all unmasked leaf images and (optionally) the corresponding masks of the series. All images are resized and padded to have the same shape.
 
-def fetch_unmasked_image_seq(leaf, img_scale: str='roi', return_masks: bool = True):
+    Args:
+        leaf: target leaf, containing all leaf data
+        img_scale: 'full', 'cropped' or 'roi'. Indicates whether the full leaf, the full leaf with cropped background or only the ROI is desired.
+        return_masks: Whether to return the masks.
+        
+    Returns:
+        List[torch.Tensor]: list of masked images with eroded markers
+        (List[torch.Tensor]: list of corresponding masks)
+    """
     if img_scale == "full":
         if return_masks:
             print(f"Warning! No masks available for full image")
@@ -456,7 +618,7 @@ def fetch_unmasked_image_seq(leaf, img_scale: str='roi', return_masks: bool = Tr
             masks = []
 
         for ind in range(leaf.n_leaves):
-            img, mask = img_moving, mask_moving = fetch_unmasked_image_mask_pair(leaf, ind, img_scale)
+            img, mask = fetch_unmasked_image_mask_pair(leaf, ind, img_scale)
             imgs.append(img)
             if return_masks:
                 masks.append(mask)

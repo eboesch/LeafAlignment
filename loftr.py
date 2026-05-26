@@ -11,39 +11,30 @@ from sklearn.cluster import KMeans
 from torch_tps import ThinPlateSpline
 from utils import convert_image_to_tensor, group_by_argmax, affine, affine_warp_expand, check_orientation, RandomHomography
 from plotting import plot_matches_conf, plot_match_coverage
+from typing import List, Tuple
 
 CONSISTENCY_DEFAULT = None # {'consistency_tolerance': 10, 'transform': {'type': 'rotation', 'params': {'rotation': -10}}}
 FILTERING_DEFAULT = {'filtering_strategy': 'confidence', 'n_landmarks': 500, 'n_landmarks_tol': 50, 'min_conf': 0.5}
-
-
-
-def load_resize_image(img_path: str, H: int=375, W: int=600):
-    """
-    Loads and resizes image at path to desired dimensions
-
-    Args:
-        img_path: path to image
-        H: desired height of output image
-        D: desired height of output image
-    """
-
-    assert os.path.exists(img_path), "Invalid path to images"
-
-    img = K.io.load_image(img_path, K.io.ImageLoadType.RGB32)[None, ...]
-    img = K.geometry.resize(img, (H, W), antialias=True)
-
-    return img
 
 
 def loftr_match(img_fix: torch.Tensor, img_mov: torch.Tensor, mask_fix: torch.Tensor=None, mask_mov: torch.Tensor=None, verbose: bool=True, return_n_matches: bool=False):
     """
     Detects Feature matches between fixed and moving images using LoFTR
 
+    Args:
+        img_fix: fixed image
+        img_mov: moving image
+        mask_fix: Optional mask of fixed image
+        mask_mov: Optional mask of moving image
+        verbose: Whether to produce detailed output (for diagnostic purposes)
+        return_n_matches: Whether to return numbers of total matches, confident matches, inliers
+
     Returns:
         Keypoints in fixed image
         Keypoints in moving image
         Classification of inliers, using RANSAC/Fundamental matrix
         Confidence of matches
+        (Dictionary of numbers of total matches, confident matches, inliers)
     """
 
     # match with LoFTR
@@ -76,18 +67,14 @@ def loftr_match(img_fix: torch.Tensor, img_mov: torch.Tensor, mask_fix: torch.Te
             "image1": K.color.rgb_to_grayscale(img_mov),
         }
 
-
-
+    # detect matches
     with torch.inference_mode():
-        correspondences = matcher(input_dict)
-    
+        correspondences = matcher(input_dict)    
 
     # select inliers
-    mkpts0 = correspondences["keypoints0"]#.cpu().numpy()
-    mkpts1 = correspondences["keypoints1"]#.cpu().numpy()
+    mkpts0 = correspondences["keypoints0"]
+    mkpts1 = correspondences["keypoints1"]
     confidence = correspondences["confidence"]
-    # _, inliers = cv2.findFundamentalMat(mkpts0.cpu().numpy(), mkpts1.cpu().numpy(), cv2.USAC_MAGSAC, 0.5, 0.999, 100000)
-    # inliers = inliers > 0
 
     if mkpts0.shape[0] < 8 or mkpts1.shape[0] < 8:
         print("Not enough points to perform inlier detection.")
@@ -113,12 +100,19 @@ def loftr_match(img_fix: torch.Tensor, img_mov: torch.Tensor, mask_fix: torch.Te
         return mkpts0, mkpts1, confidence, inliers
 
 
+# ----- Torch-based TPS Implementation -----
 
-# -------------------------------- torch tps -----------------------------------------
-
-def fit_tps_torch(target_keypts, moving_keypts, alpha=0.5):
+def fit_tps_torch(target_keypts: torch.Tensor, moving_keypts: torch.Tensor, alpha: float=0.0):
     """
-    keypoints have format (x,y)
+    Fits the TPS transform between two sets of keypoints with format (x,y).
+
+    Args:
+        target_keypts: keypoints in target image
+        moving_keypts: keypoints in moving image
+        alpha: smoothing/regularization parameters
+
+    Returs:
+        ThinPlateSpline
     """
 
     target_keypts = target_keypts[..., [1, 0]] # meshgrid builder expects (y,x) format
@@ -130,11 +124,23 @@ def fit_tps_torch(target_keypts, moving_keypts, alpha=0.5):
 
     return tps
 
-def warp_tps_points_torch(tps, points):
+def warp_tps_points_torch(tps: ThinPlateSpline, points: torch.Tensor):
+    """Applies TPS transform to points"""
     points = points[..., [1, 0]] # tps was trained in (y,x) format
     return tps.transform(points)[..., [1, 0]] # return output back in (x,y) format
 
-def warp_tps_torch(tps_list: list, image, interpolation_mode='bilinear'):
+def warp_tps_torch(tps_list: List[ThinPlateSpline], image: torch.Tensor, interpolation_mode: str='bilinear'):
+    """
+    Apply a series of TPS transformations to an image, using the specified interpolation mode.
+
+    Args:
+        tps_list: list of TPS transformations to be applied
+        image: image to transform
+        interpolation_mode: what interpolation mode to use when warping the image. For masks use 'nearest'
+
+    Returns:
+        torch.Tensor: warped image
+    """
     image = convert_image_to_tensor(image)
     height = image.shape[2]
     width = image.shape[3]
@@ -166,12 +172,22 @@ def warp_tps_torch(tps_list: list, image, interpolation_mode='bilinear'):
     grid = 2 * input_indices / size - 1
     grid = torch.flip(grid, (-1,)) # Grid sample works with x,y coordinates, not row, col
 
-    # grid_x = (2 * x + 1) / W - 1
-    # grid_y = (2 * y + 1) / H - 1
-    # grid = torch.stack((grid_x, grid_y), dim=-1)
     return torch.nn.functional.grid_sample(image, grid[None], mode=interpolation_mode, align_corners=False)
 
-def torch_tps(target_keypts, moving_keypts, moving_img, alpha: float=0.5, verbose: bool=False):
+def torch_tps(target_keypts: torch.Tensor, moving_keypts: torch.Tensor, moving_img: torch.Tensor, alpha: float=0.0, verbose: bool=False):
+    """
+    Fit a TPS transform between two sets of keypoints and use it to warp the moving image.
+
+    Args:
+        target_keypts: keypoints in target image
+        moving_keypts: keypoints in moving image
+        moving_img: moving image, to be transformed
+        alpha: smoothing/regularization parameters
+        verbose: Whether to produce detailed output (for diagnostic purposes)
+
+    Returns:
+        torch.Tensor: warped moving image
+    """
     if verbose:
         print("Fitting TPS...")
     tps = fit_tps_torch(target_keypts, moving_keypts, alpha=alpha)
@@ -180,11 +196,27 @@ def torch_tps(target_keypts, moving_keypts, moving_img, alpha: float=0.5, verbos
     warped = warp_tps_torch(tps, moving_img)
     return warped
 
-def register_loftr_tps(img_fixed, img_moving, threshold: float=0.5, smoothing: float=0.5, mask_moving: torch.Tensor=None, verbose: bool=False, plot_loftr_matches: bool=False, return_tps: bool=False):
+# TODO: deprecated? i.e. still needed?
+def register_loftr_tps(img_fixed: torch.Tensor, img_moving: torch.Tensor, threshold: float=0.5, smoothing: float=0.5, mask_moving: torch.Tensor=None, verbose: bool=False, plot_loftr_matches: bool=False, return_tps: bool=False):
     """
-    uses loftr to detect matches between the fixed and moving image, filters the matches by confidence, then uses TPS to transform the moving image
-    if a mask of the moving image is provided, it is also warped.
-    optionally the TPS transform can be returned
+    Uses loftr to detect matches between the fixed and moving image, filters the matches by confidence, then uses TPS to transform the moving image
+    If a mask of the moving image is provided, it is also warped.
+    Optionally, the TPS transform can be returned.
+
+    Args:
+        img_fixed: fixed image
+        img_moving: moving image
+        threshold: minimum confidence threshold
+        smoothing: smoothing hyperparameter. higher values lead to more "rigid" transforms
+        mask_moving: Optional mask of moving image
+        verbose: Whether to produce detailed output (for diagnostic purposes)
+        plot_loftr_matches: whether to plot figures showing distribution of matches 
+        return_tps: whether to return the TPS
+
+    Returns:
+        torch.Tensor: registered moving image
+        (torch.Tensor: mask of registered moving image. only returned if mask of moving image is provided.)
+        (ThinPlateSpline: TPS object used to register the image. only returned if return_tps==True.)
     """
     if img_fixed is None or img_moving is None:
         if return_tps:
@@ -235,9 +267,22 @@ def register_loftr_tps(img_fixed, img_moving, threshold: float=0.5, smoothing: f
         else:
             return warped_moving_img
 
-# ------------------- skimage tps ----------------------------------------------------------
+# ----- Alternative TPS implementation using Skimage -----
+# (Note that this implementation is significantly slower and doesn't expose a smoothing hyperparameter.
+#   We hence moved away from this implementation, and it is thus not as polished as the up-to-date architecture)
 
-def warp_tps_skimage(img, tps, verbose=False):
+def warp_tps_skimage(img, tps: ski.transform.ThinPlateSplineTransform, verbose: bool=False):
+    """
+    Applies TPS transform to warp image.
+
+    Args:
+        img: Image to warp. torch.Tensor or numpy image
+        tps: Skimage TPS object
+        verbose: Whether to produce detailed output (for diagnostic purposes)
+    
+    Returns:
+        torch.Tensor: transformed image
+    """
     # kornia and torch expect C x H x W, while skimage expects H x W x C
     if type(img) == torch.Tensor:
         img = K.tensor_to_image(img)
@@ -248,11 +293,21 @@ def warp_tps_skimage(img, tps, verbose=False):
 
     return convert_image_to_tensor(warped)
 
-def tps_skimage(keypts_fix, keypts_mov, img_mov=None, warp_moving: bool=True, verbose: bool=False):
+def tps_skimage(keypts_fix: torch.Tensor, keypts_mov: torch.Tensor, img_mov=None, warp_moving: bool=True, verbose: bool=False):
     """
-    Applies TPS to register moving image to fixed image. Expects keypoints to be filtered already.
+    Fits a TPS function to the keypoints. If a moving image is provided, applies the TPS transform, thus registering the moving image to the fixed image. 
+    Expects keypoints to be filtered already. If too many keypoints are provided, memory limitations can occur.
 
-    Returns: transformed moving image and transform function
+    Args:
+        keypts_fix: keypoints in fixed image
+        keypts_mov: keypoitns in moving image
+        img_mov: Optional moving image
+        warp_moving: whether to transform the moving image
+        verbose: Whether to produce detailed output (for diagnostic purposes)
+
+    Returns: 
+        torch.Tensor: transformed moving image
+        ski.transform.ThinPlateSplineTransform: TPS transformation object
     """
 
     if verbose:
@@ -267,17 +322,66 @@ def tps_skimage(keypts_fix, keypts_mov, img_mov=None, warp_moving: bool=True, ve
     else:
         return None, tps
 
+def tps_skimage_confidence(keypts_fix: torch.Tensor, keypts_mov: torch.Tensor, confidence: torch.Tensor, thrsld: float, img_mov, warp_moving: bool=True, verbose: bool=False):
+    """
+    Applies TPS to register moving image to fixed image. Keypoints are filtered by confidence.
 
-def compose_tps(transforms):
+    Args:
+        keypts_fix: keypoints in fixed image
+        keypts_mov: keypoitns in moving image
+        confidence: confidences of matches
+        thrshld: minimum confidence threshold
+        img_mov: Optional moving image
+        warp_moving: whether to transform the moving image
+        verbose: Whether to produce detailed output (for diagnostic purposes)
+
+    Returns: 
+        torch.Tensor: transformed moving image
+        ski.transform.ThinPlateSplineTransform: TPS transformation object
+    """
+
+    # filter keypoints by confidence
+    img_fix_mks = keypts_fix[confidence > thrsld]
+    img_mov_mks = keypts_mov[confidence > thrsld]
+    if verbose and (len(img_fix_mks) > 500):
+        print("Setting threshold..")
+    while (len(img_fix_mks) > 500):
+        thrsld += (1-thrsld)/5
+        img_fix_mks = keypts_fix[confidence > thrsld]
+        img_mov_mks = keypts_mov[confidence > thrsld]
+    if verbose:
+        print(f"Threshold set to {thrsld}")
+
+    # fit and apply TPS
+    return tps_skimage(img_fix_mks, img_mov_mks, img_mov=img_mov, warp_moving=warp_moving, verbose=verbose)
+
+
+def compose_tps(transforms: List[ski.transform.ThinPlateSplineTransform]):
+    """Composes TPS transforms"""
     def composed(coords):
         for t in transforms:
             coords = t(coords)
         return coords
     return composed
 
-def register_loftr_tps_skimage(img_fixed, img_moving, threshold=0.5, mask_moving: torch.Tensor=None, verbose: bool=False, plot_loftr_matches: bool=False, warp_moving: bool=True, return_tps: bool=False):
+def register_loftr_tps_skimage(img_fixed: torch.Tensor, img_moving: torch.Tensor, threshold=0.5, mask_moving: torch.Tensor=None, verbose: bool=False, plot_loftr_matches: bool=False, warp_moving: bool=True, return_tps: bool=False):
     """
-    if `warp_moving` is False, the moving image is not warped and only the tps transform is returned
+    Detects loftr matches between fixed and moving image, filters them by confidence, then uses skimage to fit and apply a TPS transform.
+
+    Args:
+        img_fixed: fixed image
+        img_moving: moving image
+        threshold: minimum match confidence threshold
+        mask_moving: Optional mask of moving image
+        verbose: Whether to produce detailed output (for diagnostic purposes)
+        plot_loftr_matches: whether to plot figures showing distribution of matches 
+        warp_moving: whether to return the warped moving image. If false, only the TPS is returned.
+        return_tps: whether to return the fitted TPS object
+
+    Returns:
+        torch.Tensor: registered moving image. only returned if warp_moving==True
+        torch.Tensor: mask of registered moving image. only returned if warp_moving==True and mask of moving image is provided.
+        ski.transform.ThinPlateSplineTransform: TPS object used to register the image. only returned if return_tps==True.
     """
     if img_fixed is None or img_moving is None:
         if return_tps:
@@ -291,6 +395,7 @@ def register_loftr_tps_skimage(img_fixed, img_moving, threshold=0.5, mask_moving
             else:
                 return None
 
+    # detect loftr matches
     mkpts0, mkpts1, confidence, _, n_matches = loftr_match(img_fixed, img_moving, verbose=verbose, return_n_matches=True)
 
     if plot_loftr_matches:
@@ -328,46 +433,23 @@ def register_loftr_tps_skimage(img_fixed, img_moving, threshold=0.5, mask_moving
             return warped_moving_img
 
 
+# ----- Filtering Matches -----
 
-# Filtering -------------------------------
-
-def tps_skimage_confidence(keypts_fix, keypts_mov, confidence, thrsld, img_mov, warp_moving: bool=True, verbose: bool=False):
+def filter_matches_by_confidence(mkpts0: torch.Tensor, mkpts1: torch.Tensor, confidence: torch.Tensor, threshold: float=0.5, n_max: int=500, verbose: bool=False):
     """
-    Applies TPS to register moving image to fixed image. Keypoints are filtered by confidence.
+    Filters matches by confidence, such that a minimum confidence threshold is satisfied, then increasing the threshold until at most n_max matches remain.
+    
+    Args:
+        mkpts0: keypoints in first/fixed image
+        mkpts1: keypoints in second/moving image
+        confidence: confidence of each match
+        threshold: minimum confidence value accepted
+        n_max: maximum number of matches to be returned
+        verbose: Whether to produce detailed output (for diagnostic purposes)
 
-    Returns: transformed moving image and transform function
+    Returns:
+        filtered mkpts0 and mkpts1
     """
-
-    # kornia and torch expect C x H x W, while skimage expects H x W x C
-    # img_mov_reordered = K.tensor_to_image(img_mov)
-
-    img_fix_mks = keypts_fix[confidence > thrsld]
-    img_mov_mks = keypts_mov[confidence > thrsld]
-    if verbose and (len(img_fix_mks) > 500):
-        print("Setting threshold..")
-    while (len(img_fix_mks) > 500):
-        thrsld += (1-thrsld)/5
-        img_fix_mks = keypts_fix[confidence > thrsld]
-        img_mov_mks = keypts_mov[confidence > thrsld]
-    if verbose:
-        print(f"Threshold set to {thrsld}")
-
-    # if verbose:
-    #     print("Estimating TPS transform...")
-    # tps = ski.transform.ThinPlateSplineTransform.from_estimate(img_fix_mks, img_mov_mks)
-
-    return tps_skimage(img_fix_mks, img_mov_mks, img_mov=img_mov, warp_moving=warp_moving, verbose=verbose)
-
-    # if warp_moving:
-    #     if verbose:
-    #         print("Transforming moving image...")
-    #     warped = ski.transform.warp(img_mov_reordered, tps) # warp uses inverse transform, i.e. img_mov -> img_fix
-
-    #     return warped, tps
-    # else:
-    #     return None, tps
-
-def filter_matches_by_confidence(mkpts0, mkpts1, confidence, threshold: float=0.5, n_max: int=500, verbose: bool=False):
     img_fix_mks = mkpts0[confidence > threshold]
     img_mov_mks = mkpts1[confidence > threshold]
 
@@ -382,9 +464,21 @@ def filter_matches_by_confidence(mkpts0, mkpts1, confidence, threshold: float=0.
 
     return img_fix_mks, img_mov_mks
 
-def filter_matches_by_confidence_bin_search(mkpts0, mkpts1, confidence, n_target: int=500, tol: int=50, min_conf: float=0.5):
+def filter_matches_by_confidence_bin_search(mkpts0: torch.Tensor, mkpts1: torch.Tensor, confidence: torch.Tensor, n_target: int=500, tol: int=50, min_conf: float=0.5):
     """
     Filters points by confidence, adjusting the confidence threshold so that the resulting subset of points is within a tolerance of the targeted number of points.
+    
+    Args:
+        mkpts0: keypoints in first/fixed image
+        mkpts1: keypoints in second/moving image
+        confidence: confidence of each match
+        n_target: targeted number of matches to be returned
+        tol: tolerated deviation of returned number of points from target
+        min_conf: minimum confidence value accepted
+        n_max: maximum number of matches to be returned
+
+    Returns:
+        filtered mkpts0 and mkpts1
     """
     
     best_0 = mkpts0[confidence > min_conf]
@@ -423,7 +517,21 @@ def filter_matches_by_confidence_bin_search(mkpts0, mkpts1, confidence, n_target
 
     return best_0, best_1
 
-def filter_matches_by_grid(mkpts0, mkpts1, confidence, img_width, threshold: float=0.5, cell_size: int=50):
+def filter_matches_by_grid(mkpts0: torch.Tensor, mkpts1: torch.Tensor, confidence: torch.Tensor, img_width: IndentationError, threshold: float=0.5, cell_size: int=50):
+    """
+    Divides image into a grid and picks highest confidence match per grid cell.
+    
+    Args:
+        mkpts0: keypoints in first/fixed image
+        mkpts1: keypoints in second/moving image
+        confidence: confidence of each match
+        img_width: width of the underlying image
+        threshold: minimum confidence value accepted
+        cell_size: size of each grid cell in px
+
+    Returns:
+        filtered mkpts0 and mkpts1
+    """
     num_cell_per_row =  math.ceil(img_width / cell_size)
 
     cell_x = mkpts0[:,0] // cell_size
@@ -441,9 +549,9 @@ def filter_matches_by_grid(mkpts0, mkpts1, confidence, img_width, threshold: flo
         cell_max_coord1 = cell_max_coord1[confidence[cell_max_indices] > threshold]
     return cell_max_coord0, cell_max_coord1
 
-def filter_matches_by_grid_adaptive(mkpts0, mkpts1, confidence, img_shape, n_target: int=500, tol: int=50, min_conf: float=0.5):
+def filter_matches_by_grid_adaptive(mkpts0: torch.Tensor, mkpts1: torch.Tensor, confidence: torch.Tensor, img_shape: Tuple[int, int], n_target: int=500, tol: int=50, min_conf: float=0.5):
     """
-    Iteratively filters points by min grid, adjusting the cell size parameter so that the resulting subset of points is within a tolerance of the targeted number of points.
+    Iteratively filters points by grid, adjusting the cell size parameter so that the resulting subset of points is within a tolerance of the targeted number of points.
     
     Args:
         mkpts0: (N, 2) array/tensor of keypoints in image 0
@@ -456,7 +564,6 @@ def filter_matches_by_grid_adaptive(mkpts0, mkpts1, confidence, img_shape, n_tar
 
     Returns:
         filtered kpts0, filtered kpts1
-    
     """
     
     best_0 = mkpts0[confidence > min_conf]
@@ -495,9 +602,20 @@ def filter_matches_by_grid_adaptive(mkpts0, mkpts1, confidence, img_shape, n_tar
 
     return best_0, best_1
 
+def filter_matches_by_cluster(mkpts0: torch.Tensor, mkpts1: torch.Tensor, confidence: torch.Tensor, min_conf: float=0.5, n_clusters: int=400):
+    """
+    Clusters matches into clusters and picks the highest confidence match for each cluster.
+    
+    Args:
+        mkpts0: keypoints in first/fixed image
+        mkpts1: keypoints in second/moving image
+        confidence: confidence of each match
+        min_conf: minimum confidence value accepted
+        n_clusters: number of clusters
 
-def filter_matches_by_cluster(mkpts0, mkpts1, confidence, min_conf: float=0.5, n_clusters: int=400):
-
+    Returns:
+        filtered mkpts0 and mkpts1
+    """
     # only consider above threshold
     mkpts0_th = mkpts0[confidence > min_conf]
     mkpts1_th = mkpts1[confidence > min_conf]
@@ -523,7 +641,7 @@ def filter_matches_by_cluster(mkpts0, mkpts1, confidence, min_conf: float=0.5, n
 
     return cluster_max_coord0, cluster_max_coord1
 
-def filter_matches_by_min_distance(mkpts0, mkpts1, confidence, min_dist: float=20.0, max_points: int=None, threshold: float=0.5,):
+def filter_matches_by_min_distance(mkpts0: torch.Tensor, mkpts1: torch.Tensor, confidence: torch.Tensor, min_dist: float=20.0, max_points: int=None, threshold: float=0.5,):
     """
     Greedy minimum-distance filtering for LoFTR matches.
 
@@ -585,8 +703,7 @@ def filter_matches_by_min_distance(mkpts0, mkpts1, confidence, min_dist: float=2
 
     return torch.from_numpy(mkpts0[selected]), torch.from_numpy(mkpts1[selected]), #torch.from_numpy(confidence[selected])   )
 
-
-def filter_matches_by_min_distance_adaptive(mkpts0, mkpts1, confidence, img_shape, n_target: int=500, tol: int=50, min_conf: float=0.5, max_points: int=None):
+def filter_matches_by_min_distance_adaptive(mkpts0: torch.Tensor, mkpts1: torch.Tensor, confidence: torch.Tensor, img_shape: Tuple[int, int], n_target: int=500, tol: int=50, min_conf: float=0.5, max_points: int=None):
     """
     Iteratively filters points by min distance, adjusting the min distance parameter so that the resulting subset of points is within a tolerance of the targeted number of points.
     
@@ -597,12 +714,11 @@ def filter_matches_by_min_distance_adaptive(mkpts0, mkpts1, confidence, img_shap
         img_shape: shape of the underlying image(s)
         n_target: targeted number of matches
         tol: tolerance indicating by how much the number of matches may deviate from the target 
-        threshold: confidence threshold. only matches with confidence above this threshold are considered
+        min_conf: confidence threshold. only matches with confidence above this threshold are considered
         max_points: optional cap on number of matches
 
     Returns:
         filtered kpts0, filtered kpts1
-    
     """
     
     best_0 = mkpts0[confidence > min_conf]
@@ -641,8 +757,23 @@ def filter_matches_by_min_distance_adaptive(mkpts0, mkpts1, confidence, img_shap
 
     return best_0, best_1
 
+def filter_matches(mkpts0: torch.Tensor, mkpts1: torch.Tensor, confidence: torch.Tensor, img_shape: Tuple[int, int], filtering_strategy: str="confidence", n_target: int=500, tol: int=50, min_conf: float=0.5):
+    """
+    Filter matches using the chosen strategy, resulting in n_target+/-tol matches.
 
-def filter_matches(mkpts0, mkpts1, confidence, img_shape, filtering_strategy: str="confidence", n_target: int=500, tol: int=50, min_conf: float=0.5):
+    Args:
+        mkpts0: (N, 2) array/tensor of keypoints in image 0
+        mkpts1: (N, 2) array/tensor of keypoints in image 1
+        confidence: (N,) match confidence
+        img_shape: shape of the underlying image(s)
+        n_target: targeted number of matches
+        tol: tolerance indicating by how much the number of matches may deviate from the target 
+        min_conf: confidence threshold. only matches with confidence above this threshold are considered
+        max_points: optional cap on number of matches
+
+    Returns:
+        filtered kpts0, filtered kpts1
+    """
     if filtering_strategy == "confidence":
         return filter_matches_by_confidence_bin_search(mkpts0, mkpts1, confidence, n_target=n_target, tol=tol, min_conf=min_conf)
     elif filtering_strategy == "grid":
@@ -656,10 +787,13 @@ def filter_matches(mkpts0, mkpts1, confidence, img_shape, filtering_strategy: st
 
 # warp consistency ---------------
 
-def nearest_neighbors(pts1, pts2):
+def nearest_neighbors(pts1: torch.Tensor, pts2: torch.Tensor):
     """
-    pts1: (N, D)
-    pts2: (M, D)
+    Finds the nearest neighbor in pts2 of each point in pts1.
+
+    Args:
+        pts1: List of points, shape (N, D)
+        pts2: List of points, shape (M, D)
 
     Returns:
         Tensor of indices, such that pts2[indices[i]] is the nearest neighbor of pts[i]
@@ -670,13 +804,22 @@ def nearest_neighbors(pts1, pts2):
     # nearest neighbor in pts2 for each pts1
     min_dists, indices = torch.min(dists, dim=1)
 
-    return indices#, min_dists
+    return indices
 
-def cycle_matches(kpts12_2, kpts23_2, kpts23_3, kpts31_3, kpts31_1, return_indices: bool=False):
+def cycle_matches(kpts12_2: torch.Tensor, kpts23_2: torch.Tensor, kpts23_3: torch.Tensor, kpts31_3: torch.Tensor, kpts31_1: torch.Tensor, return_indices: bool=False):
     """
-    Cycles from Img1 to Img2 to Img3, picking always to nearest neighbor from the new set of matches.
+    Cycles from Img1 to Img2 to Img3, picking always the nearest neighbor from the new set of matches.
 
-    Returns the matches in Img1 after they've made a full cycle
+    Args:
+        kpts12_2: matches in Img2 from match detection Img1 -> Img2
+        kpts23_2: matches in Img2 from match detection Img2 -> Img3
+        kpts23_3: matches in Img3 from match detection Img2 -> Img3
+        kpts31_3: matches in Img3 from match detection Img3 -> Img1
+        kpts31_1: matches in Img1 from match detection Img3 -> Img1
+        return_indices: whether to return the indices of nearest neighbors 
+
+    Returns:
+        the matches in Img1 after they've made a full cycle (i.e. a subset of kpts31_1)
     """
     nearest_neighbors_img2 = nearest_neighbors(kpts12_2, kpts23_2)
     nearest_neighbors_img3 = nearest_neighbors(kpts23_3, kpts31_3)
@@ -690,7 +833,24 @@ def cycle_matches(kpts12_2, kpts23_2, kpts23_3, kpts31_3, kpts31_1, return_indic
     else:
         return kpts31_1
 
-def plot_cycle_matches(img1, img2, img3, kpts12_1, kpts12_2, kpts23_2, kpts23_3, kpts31_3, kpts31_1, nearest_neighbors_img2, nearest_neighbors_img3, N_show=50):
+def plot_cycle_matches(img1: torch.Tensor, img2: torch.Tensor, img3: torch.Tensor, kpts12_1: torch.Tensor, kpts12_2: torch.Tensor, kpts23_2: torch.Tensor, kpts23_3: torch.Tensor, kpts31_3: torch.Tensor, kpts31_1: torch.Tensor, nearest_neighbors_img2, nearest_neighbors_img3, N_show: int=50):
+    """
+    Plots the three images of warp consistency, and the cycle through the nearest-neighbor matches and their displacements.
+
+    Args:
+        img1: first image (fixed image)
+        img2: second image (moving image)
+        img3: third image (warped moving image)
+        kpts12_1: matches in Img1 from match detection Img1 -> Img2
+        kpts12_2: matches in Img2 from match detection Img1 -> Img2
+        kpts23_2: matches in Img2 from match detection Img2 -> Img3
+        kpts23_3: matches in Img3 from match detection Img2 -> Img3
+        kpts31_3: matches in Img3 from match detection Img3 -> Img1
+        kpts31_1: matches in Img1 from match detection Img3 -> Img1
+        nearest_neighbors_img2: indices of nearest neighbors between kpts12_2 and kpts23_2
+        nearest_neighbors_img3: indices of nearest neighbors between kpts23_3 and kpts31_3
+        N_show: number of matches to show
+    """
     N_show = min(N_show, len(kpts12_1))
     show_idx = torch.randperm(len(kpts12_1))[:N_show]
 
@@ -753,24 +913,41 @@ def plot_cycle_matches(img1, img2, img3, kpts12_1, kpts12_2, kpts23_2, kpts23_3,
     plt.show()
 
 def check_warp_consistency(
-    img_fixed, 
-    img_moving, 
-    mask_fixed,
-    mask_moving, 
+    img_fixed: torch.Tensor, 
+    img_moving: torch.Tensor, 
+    mask_fixed: torch.Tensor,
+    mask_moving: torch.Tensor, 
     plot_matches: bool=False, 
     consistency_tolerance: float=10, 
     transform: dict={'type': 'rotation', 'params': {'rotation': -10}},
-    # transform_type: str="rotation", 
-    # rotation: float=-10, 
-    # distortion_scale: float=0.4, 
     verbose: bool=False
     ):
+    """
+    Detects matches between fixed and moving image and filters out inconsistent matches.
+    To evaluate consistent, a third image is generated through a transformation of the moving image. LoFTR matches are then detected between image pair. the correspondences are then matched to their nearest neighbor amongst the correspondes between the next image pair, resulting in cycle of matches. finally the displacement between the first an last point is measured. if the displacement it too large, the correspondence is considered inconsistent.
+
+    Args:
+        img_fixed: fixed image 
+        img_moving: moving image
+        mask_fixed: mask of fixed image
+        mask_moving: mask of moving image
+        plot_matches: whether to plot figures showing distribution of matches and warp consistency cycles
+        consistency_tolerance: threshold for displacement after traveling through the cycle. matches with larger displacement are discarded as inconsistent
+        transform: dictionary specifying the transformation used to generate the third image. by default 'type'='rotation'. alternatively, 'type'='homography' is also supported.
+        verbose: Whether to produce detailed output (for diagnostic purposes)
+
+    Returns
+        torch.Tensor: consistent matches in fixed image
+        torch.Tensor: consistent matches in moving image
+        torch.Tensor: confidence of consistent matches
+    """
         
 
     img1 = img_fixed
     img1_mask = mask_fixed
     img2 = img_moving
     img2_mask = mask_moving
+    # create third image
     if transform["type"] == "rotation":
         out = affine_warp_expand(img2, img2_mask, rot_angle_deg=transform['params']['rotation'])
         img3 = out["imgs"]
@@ -779,13 +956,10 @@ def check_warp_consistency(
         hom = RandomHomography(img_fixed.shape[2], img_fixed.shape[3], distortion_scale=transform['params']['distortion_scale'])
         img3 = hom.warp_image(img_moving)
         img3_mask = hom.warp_mask(mask_moving)
-        # print("img2: ", img2.dtype)
-        # print("img2_mask: ", img2_mask.dtype)
-        # print("img3: ", img3.dtype)
-        # print("img3_mask: ", img3_mask.dtype)
     else:
         raise ValueError(f"Unknown transform_type {transform_type}. Expected 'rotation' or 'homography'.")
 
+    # detect loftr matches
     if verbose:
         print(f"Detecting LoFTR Matches...")
     # 1 -> 2
@@ -813,6 +987,8 @@ def check_warp_consistency(
         cycled_31_1, nn_ind_2, nn_ind_3 = cycle_matches(mkpts12_2, mkpts23_2, mkpts23_3, mkpts13_3, mkpts13_1, return_indices=True)
         plot_cycle_matches(img1, img2, img3, mkpts12_1, mkpts12_2, mkpts23_2, mkpts23_3, mkpts13_3, mkpts13_1, nn_ind_2, nn_ind_3, N_show=30)
     else:
+        # find cycle through matches
+
         # cycled_31_1 = cycle_matches(mkpts12_2, mkpts23_2, mkpts23_3, mkpts31_3, mkpts31_1)
         cycled_31_1 = cycle_matches(mkpts12_2, mkpts23_2, mkpts23_3, mkpts13_3, mkpts13_1)
     dists = torch.norm(mkpts12_1 - cycled_31_1, dim=1)
@@ -829,16 +1005,39 @@ def check_warp_consistency(
     return mkpts12_1[is_consistent], mkpts12_2[is_consistent], confidence_12[is_consistent]
 
 
-
+# TODO: check what happens if masks are None
 def fetch_keypoints(
-    img_fixed,
-    img_moving, 
+    img_fixed: torch.Tensor,
+    img_moving: torch.Tensor, 
     mask_fixed: torch.Tensor=None,
     mask_moving: torch.Tensor=None,
     warp_consistency: dict=CONSISTENCY_DEFAULT,
     match_filtering: dict=FILTERING_DEFAULT,
     verbose: bool=False,
 ):
+    """
+    Detects matches between fixed and moving, filters them by warp consistency, then reduces the number of matches to the target amount. 
+    Also tests for a 180° degree rotation between fixed and moving image.
+    
+    Args:
+        img_fixed: fixed image 
+        img_moving: moving image
+        mask_fixed: Optional mask of fixed image
+        mask_moving: Optional mask of moving image
+        warp_consistency: dictionary specifying parameters for warp consistency. to disable warp consistency, set it to None.
+        match_filtering: dictionary specifying parameters for match filtering/subsampling, such as filtering strategy, target number of landmarks, and minimum confidence threshold.
+        verbose: Whether to produce detailed output (for diagnostic purposes)
+
+    Returns:
+        dictionary:
+            - mkpts0: consistent matches in fixed image
+            - mkpts1: consistent matches in moving image
+            - confidence: confidences of consistend matches
+            - mkpts0_filtered: filtered consistent matches in fixed image
+            - mkpts1_filtered: filtered consistent matches in moving image
+            - rotated_moving_img: moving image rotate by 180°. only present if it was determined that the moving image is rotated by 180° relative to the fixed image.
+            - rotated_moving_mask: mask moving image rotate by 180°. only present if it was determined that the moving image is rotated by 180° relative to the fixed image.
+    """
     out_dict = {}
 
     # find loftr matches
@@ -853,9 +1052,6 @@ def fetch_keypoints(
         # images are likely in different orientations -> loftr struggles
 
         # rotate moving image        
-        # out = affine_warp_expand(imgs=img_moving, masks=mask_moving, rot_angle_deg=180)
-        # img_moving_rot = out['imgs']
-        # mask_moving_rot = out['masks']
         img_moving_rot = affine(img_moving, rot_angle_deg=180)
         mask_moving_rot = affine(mask_moving, rot_angle_deg=180, interpolation_mode='nearest')
 

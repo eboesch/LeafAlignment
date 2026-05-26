@@ -7,6 +7,7 @@ import matplotlib.patches as mpatches
 import numpy as np
 import torch
 import math
+from typing import Tuple
 
 from utils import convert_image_to_tensor 
 
@@ -14,17 +15,20 @@ from utils import convert_image_to_tensor
 
 def plot_matches(img_fix, keypts_fix, img_mov, keypts_mov, inliers, N_show: int=100, inliers_only: bool=True, vertical: bool=True):
     """
-    Plots matches between images.
+    Plots matches/correspondences between images, connected by lines.
 
     Args:
-        img_fix:    fixed image
+        img_fix: fixed image
         keypts_fix: coordinates of keypoints in fixed image 
-        img_mov:    moving image
+        img_mov: moving image
         keypts_mov: coordinates of keypoints in moving image 
-        inliers:     array containing classification as inlier of each match
-        N_show (int):   how many matches to plot 
-        inliers_only (bool):    whether to plot only matches classified as inliers
-        vertical (bool):    whether to plot images vertically stacked.
+        inliers: array containing classification as inlier of each match
+        N_show (int): how many matches to plot 
+        inliers_only (bool): whether to plot only matches classified as inliers
+        vertical (bool): whether to plot images vertically stacked.
+
+    Returns:
+        fig, ax
     """
 
     if type(img_fix) == torch.Tensor:
@@ -97,17 +101,20 @@ def plot_matches(img_fix, keypts_fix, img_mov, keypts_mov, inliers, N_show: int=
 
 def plot_matches_conf(img_fix, keypts_fix, img_mov, keypts_mov, confidence, N_show: int=100, vertical: bool=True):
     """
-    Plots matches between images, colored by confidence.
+    Plots matches/correspondences between images, connected by lines colored by confidence.
 
     Args:
-        img_fix:    fixed image
+        img_fix: fixed image
         keypts_fix: coordinates of keypoints in fixed image 
-        img_mov:    moving image
+        img_mov: moving image
         keypts_mov: coordinates of keypoints in moving image 
-        inliers:     array containing classification as inlier of each match
-        N_show (int):   how many matches to plot 
-        inliers_only (bool):    whether to plot only matches classified as inliers
-        vertical (bool):    whether to plot images vertically stacked.
+        inliers: array containing classification as inlier of each match
+        N_show (int): how many matches to plot 
+        inliers_only (bool): whether to plot only matches classified as inliers
+        vertical (bool): whether to plot images vertically stacked.
+    
+    Returns:
+        fig, ax
     """
 
     if type(img_fix) == torch.Tensor:
@@ -162,15 +169,20 @@ def plot_matches_conf(img_fix, keypts_fix, img_mov, keypts_mov, confidence, N_sh
     return fig, ax
 
 
-
 def plot_match_coverage(img_fix, keypts_fix, img_mov, keypts_mov, confidence, title: str=None):
     """
+    Plots distribution of matches/correspondences across the image, with matches colored by confidence.
+    
     Args:
-        img_fix:    fixed image
+        img_fix: fixed image
         keypts_fix: coordinates of keypoints in fixed image 
-        img_mov:    moving image
+        img_mov: moving image
         keypts_mov: coordinates of keypoints in moving image 
         confidence: confidence of each match
+        title: Optional suptitle for the plot.
+
+    Returns:
+        fig, axes
     """
     
     # kornia and torch expect C x H x W, while skimage & matplotlib expect H x W x C
@@ -206,7 +218,18 @@ def plot_match_coverage(img_fix, keypts_fix, img_mov, keypts_mov, confidence, ti
 
 def plot_img_transform(img_mov, img_mov_warped, plot_keypts: bool=False, keypts_mov=None, keypts_warped=None, title: str=None):
     """
-    plots original moving image and transformed moving image
+    Plots original moving image and transformed moving image. Optionally plots keypoints on top of the image.
+
+    Args:
+        img_mov: original moving image
+        img_mov_warped: transformed/registered moving image
+        plot_keypts: whether to plot keypoints
+        keypts_mov: keypoints in original moving image (only needed if plot_keypts==True)
+        keypts_warped: keypoints in transformed/registered moving image (only needed if plot_keypts==True)
+        title: Optional suptitle for the plot.
+
+    Returns:
+        fig, axes
     """
 
     # kornia and torch expect C x H x W, while skimage & matplotlib expect H x W x C
@@ -238,9 +261,18 @@ def plot_img_transform(img_mov, img_mov_warped, plot_keypts: bool=False, keypts_
     return fig, axs
 
 
-def plot_overlay(img_fix, img_mov, title=None):
+def plot_overlay(img_fix, img_mov, title: str=None):
     """
-    ideally the fixed image is in gray scale
+    Overlays the (semi-transparent) moving image over the fixed image.
+    Ideally the fixed image is in gray scale (or a torch.Tensor).
+
+    Args:
+        img_fix: fixed image
+        img_mov: moving image
+        title: Optional title for the plot.
+
+    Returns:
+        fig
     """
     # kornia and torch expect C x H x W, while skimage & matplotlib expect H x W x C
     if type(img_fix) == torch.Tensor:
@@ -263,7 +295,21 @@ def plot_overlay(img_fix, img_mov, title=None):
 
     return fig
 
-def plot_img(img, title=None, figsize=(12,6), title_fontsize=20, axis=False):
+
+def plot_img(img, title: str=None, figsize: Tuple[int, int]=(12,6), title_fontsize: int=20, axis: bool=False):
+    """
+    Plots a single image, regardless of whether it's a Tensor, numpy array or a PIL image.
+
+    Args:
+        img: image to plot
+        title: Optional title for the plot
+        figsize: Size of the plot. Default: (12,6)
+        title_fontsize: Fontsize of the title. Default: 20
+        axis: Whether to show the axes. Default: False
+
+    Returns:
+        fig
+    """
     img = convert_image_to_tensor(img)
 
     fig = plt.figure( figsize=figsize)
@@ -274,22 +320,37 @@ def plot_img(img, title=None, figsize=(12,6), title_fontsize=20, axis=False):
     if not axis:
         plt.axis('off')
     
-    # fig.show()
     return fig
 
-def plot_image_pair(img1, img2, img1_ind: int=None, img2_ind: int=None, subtitle_1: str=None, subtitle_2: str=None, subtitle_size: int=12, title: str=None, title_offset: float=0.86, title_size: int=20, figsize=(12,6)):
+
+def plot_image_pair(img1, img2, img1_ind: int=1, img2_ind: int=2, subtitle_1: str=None, subtitle_2: str=None, subtitle_size: int=12, title: str=None, title_offset: float=0.86, title_size: int=20, figsize: Tuple[int, int]=(12,6)):
+    """
+    Plots a pair of images side by side.
+
+    Args:
+        img1: left image
+        img2: right image
+        img1_ind: index of the left image, used in the subtitle of the left image if no other subtitle is provided. Default: 1
+        img2_ind: index of the right image, used in the subtitle of the left image if no other subtitle is provided. Default: 2
+        subtitle_1: Optional subtitle of the left image. If provided, overwrites index-based subtitle
+        subtitle_2: Optional subtitle of the right image. If provided, overwrites index-based subtitle
+        subtitle_size: Fontsize of subtitles. Default: 12
+        title: Optional suptitle of plot
+        title_offset: y-displacement of title for adjusting spacing. Default: 0.86
+        title_size: Fontsize of title. Default: 20
+        figsize: Size of the plot. Default: (12,6)
+
+    Returns: 
+        fig, axes
+    """
     if type(img1) == torch.Tensor:
         img1 = K.tensor_to_image(img1)
     if type(img2) == torch.Tensor:
         img2 = K.tensor_to_image(img2)
 
     if subtitle_1 is None:        
-        if img1_ind is None:
-            img1_ind = 1
         subtitle_1 = f"Image {img1_ind}"
     if subtitle_2 is None:        
-        if img2_ind is None:
-            img2_ind = 2
         subtitle_2 = f"Image {img2_ind}"
 
     fig, axs = plt.subplots(1, 2, figsize=figsize)
@@ -307,6 +368,18 @@ def plot_image_pair(img1, img2, img1_ind: int=None, img2_ind: int=None, subtitle
 
 
 def plot_image_series(imgs: list, title: str=None, n_cols: int=2, dpi: int=70, save_fig: bool=False, file_name: str=None, path: str="temp/"):
+    """
+    Creates a plot of a series of images. The plot can either be saved at a provided path, or be displayed.
+
+    Args:
+        imgs: list of images, 
+        title: Optional suptitle of plot
+        n_cols: Number of columns to plot the images in. Default: 2
+        dpi: Resolution (dots per inches) of the plot. Defaults: 70
+        save_fig: Whether to save the figure. Default: False
+        file_name: (Optional) name under which to save the figure
+        path: Path/directory in which to save the file. Default: "temp/"
+    """
 
     n = len(imgs)
     n_rows = math.ceil(n/n_cols)
