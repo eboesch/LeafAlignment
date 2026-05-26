@@ -6,7 +6,8 @@ from skimage.transform import AffineTransform
 
 from utils import convert_image_to_tensor, match_sizes_resize, match_sizes_resize_batch, invert_list, affine_warp_expand, check_orientation, RandomHomography
 from masking import fetch_image_mask_pair, fetch_masked_image_seq
-from loftr import loftr_match, tps_skimage, tps_skimage_confidence, register_loftr_tps, register_loftr_tps_skimage, warp_tps_skimage, warp_tps_torch, fit_tps_torch, compose_tps, filter_matches_by_confidence, filter_matches_by_min_distance, filter_matches, check_warp_consistency, fetch_keypoints
+from loftr import loftr_match, warp_tps_torch, fit_tps_torch, fetch_keypoints
+from loftr import loftr_match, tps_skimage_confidence, register_loftr_tps_skimage, warp_tps_skimage, compose_tps,
 from plotting import plot_image_pair, plot_overlay, plot_matches_conf, plot_match_coverage
 from DatasetTools.LeafImageSeries import LeafDataset
 
@@ -67,75 +68,6 @@ def fetch_preregistered_leaf_seq(leaf: LeafDataset):
     imgs[0] = imgs[0] * masks[0]
 
     return imgs, masks
-
-# TODO: update (if still needed)
-def fetch_registered_image_mask_pair(leaf: LeafDataset, fixed_img_ind: int, moving_img_ind: int, method: str, plot_masked_images: bool=False, plot_loftr_matches: bool=False):
-    """
-    For the given index pair, fetches registered fixed and moving image plus matching masks.
-
-    Args:
-        leaf: leaf sequence to retrieve data from
-        fixed_img_ind: index of the fixed image
-        moving_img_ind: index of the moving image
-        method: registration to utilize
-            "Piecewise Affine": Jonas' pre-existing method
-            "LoFTR + TPS Full": TPS based on LoFTR matches on full leaf
-            "LoFTR + TPS Full with Markers": TPS based on LoFTR matches on full leaf, without eroding away markers
-            "LoFTR + TPS ROI": TPS based on LoFTR matches only on ROI
-            "LoFTR + TPS ROI with Markers": TPS based on LoFTR matches only on ROI, without eroding away markers
-            "LoFTR + TPS ROI Pre-Rotated": TPS based on LoFTR matches only on ROI, where ROI is already rotated  to align with the image borders
-            "LoFTR + TPS ROI Pre-Rotated with Markers": TPS based on LoFTR matches only on pre-rotated ROI, without eroding away markers
-        plot_masked_images: if True, displays images & masks after masking, before registration
-        plot_loftr_matches: if True, displays diagnostic images of matches detected by LoFTR
-
-    Returns:
-        torch.Tensor: fixed image
-        torch.Tensor: registered moving image
-        torch.Tensor: mask for fixed image
-        torch.Tensor: mask for registered moving image
-
-    """
-    if method == "Piecewise Affine":
-        img_fixed, mask_fixed = fetch_preregistered_leaf(leaf, fixed_img_ind)
-        img_moving, mask_moving = fetch_preregistered_leaf(leaf, moving_img_ind)
-        return img_fixed, img_moving, mask_fixed, mask_moving
-        
-    else:
-        # fetch images
-        if method == "LoFTR + TPS ROI":
-            img_fixed, mask_fixed = fetch_image_mask_pair(leaf, fixed_img_ind, img_scale="roi", erase_markers=True, pre_rotate=False)
-            img_moving, mask_moving = fetch_image_mask_pair(leaf, moving_img_ind, img_scale="roi", erase_markers=True, pre_rotate=False)
-        elif method == "LoFTR + TPS ROI with Markers":
-            img_fixed, mask_fixed = fetch_image_mask_pair(leaf, fixed_img_ind, img_scale="roi", erase_markers=False, pre_rotate=False)
-            img_moving, mask_moving = fetch_image_mask_pair(leaf, moving_img_ind, img_scale="roi", erase_markers=False, pre_rotate=False)
-        elif method == "LoFTR + TPS ROI Pre-Rotated":
-            img_fixed, mask_fixed = fetch_image_mask_pair(leaf, fixed_img_ind, img_scale="roi", erase_markers=True, pre_rotate=True)
-            img_moving, mask_moving = fetch_image_mask_pair(leaf, moving_img_ind, img_scale="roi", erase_markers=True, pre_rotate=True)
-        elif method == "LoFTR + TPS ROI Pre-Rotated with Markers":
-            img_fixed, mask_fixed = fetch_image_mask_pair(leaf, fixed_img_ind, img_scale="roi", erase_markers=False, pre_rotate=True)
-            img_moving, mask_moving = fetch_image_mask_pair(leaf, moving_img_ind, img_scale="roi", erase_markers=False, pre_rotate=True)
-        elif method == "LoFTR + TPS Full":
-            img_fixed, mask_fixed = fetch_image_mask_pair(leaf, fixed_img_ind, img_scale="full", erase_markers=True)
-            img_moving, mask_moving = fetch_image_mask_pair(leaf, moving_img_ind, img_scale="full", erase_markers=True)
-        elif method == "LoFTR + TPS Full with Markers":
-            img_fixed, mask_fixed = fetch_image_mask_pair(leaf, fixed_img_ind, img_scale="full", erase_markers=False)
-            img_moving, mask_moving = fetch_image_mask_pair(leaf, moving_img_ind, img_scale="full", erase_markers=False)
-        else:
-            raise ValueError(f'Unknown registration method {method}')
-
-        # resize
-        img_fixed, img_moving, mask_fixed, mask_moving = match_sizes_resize(img_fixed, img_moving, mask_fixed, mask_moving)
-
-        if plot_masked_images:
-            fig, ax = plot_image_pair(img_fixed, img_moving, fixed_img_ind, moving_img_ind, title="Masked out input images", title_offset=0.7)
-            fig.show()
-            fig, ax = plot_image_pair(mask_fixed, mask_moving, fixed_img_ind, moving_img_ind, title="corresponding masks", title_offset=0.7)
-            fig.show()
-
-        # register
-        warped_moving_img, warped_moving_mask = register_loftr_tps(img_fixed, img_moving, mask_moving=mask_moving, verbose=False, plot_loftr_matches=plot_loftr_matches, return_tps=False)
-        
-        return img_fixed, warped_moving_img, mask_fixed, warped_moving_mask
 
 
 def register_single_image(
@@ -247,12 +179,106 @@ def register_single_image(
         else:
             return warped_moving_img
 
-# TODO: handle skimage
+def fetch_registered_image_mask_pair(
+    leaf: LeafDataset, 
+    fixed_img_ind: int, 
+    moving_img_ind: int, 
+    method: str, 
+    smoothing: float=0.0, 
+    warp_consistency: dict=CONSISTENCY_DEFAULT, 
+    match_filtering: dict=FILTERING_DEFAULT, 
+    plot_masked_images: bool=False, 
+    plot_loftr_matches: bool=False,
+    verbose: bool=False, 
+    ):
+    """
+    For the given index pair, fetches registered fixed and moving image plus matching masks.
+
+    Args:
+        leaf: leaf sequence to retrieve data from
+        fixed_img_ind: index of the fixed image
+        moving_img_ind: index of the moving image
+        method: registration to utilize
+            "Piecewise Affine": Jonas' pre-existing method
+            "LoFTR + TPS Full": TPS based on LoFTR matches on full leaf
+            "LoFTR + TPS Full with Markers": TPS based on LoFTR matches on full leaf, without eroding away markers
+            "LoFTR + TPS Full Pre-Rotated": TPS based on LoFTR matches on full leaf, where the leaf is pre-rotated to align with the image borders
+            "LoFTR + TPS Full Pre-Rotated with Markers": TPS based on LoFTR matches on full leaf, without eroding away markers,  where the leaf is pre-rotated to align with the image borders
+            "LoFTR + TPS ROI": TPS based on LoFTR matches only on ROI
+            "LoFTR + TPS ROI with Markers": TPS based on LoFTR matches only on ROI, without eroding away markers
+            "LoFTR + TPS ROI Pre-Rotated": TPS based on LoFTR matches only on ROI, where ROI is already rotated  to align with the image borders
+            "LoFTR + TPS ROI Pre-Rotated with Markers": TPS based on LoFTR matches only on pre-rotated ROI, without eroding away markers
+        smoothing: smoothing hyperparameter. higher values lead to more "rigid" transforms
+        warp_consistency: dictionary specifying parameters for warp consistency. to disable warp consistency, set it to None.
+        match_filtering: dictionary specifying parameters for match filtering/subsampling, such as filtering strategy, target number of landmarks, and minimum confidence threshold.
+        plot_masked_images: if True, displays images & masks after masking, before registration
+        plot_loftr_matches: if True, displays diagnostic images of matches detected by LoFTR
+        verbose: Whether to produce detailed output (for diagnostic purposes)
+
+    Returns:
+        torch.Tensor: fixed image
+        torch.Tensor: registered moving image
+        torch.Tensor: mask for fixed image
+        torch.Tensor: mask for registered moving image
+
+    """
+    if method == "Piecewise Affine":
+        img_fixed, mask_fixed = fetch_preregistered_leaf(leaf, fixed_img_ind)
+        img_moving, mask_moving = fetch_preregistered_leaf(leaf, moving_img_ind)
+        return img_fixed, img_moving, mask_fixed, mask_moving
+        
+    else:
+        # fetch images
+
+        erosion = {"type": "pixel_erosion", 'params': {}}
+        no_erosion = None
+
+        if method == "LoFTR + TPS ROI":
+            img_fixed, mask_fixed = fetch_image_mask_pair(leaf, fixed_img_ind, img_scale="roi", erase_markers=erosion, pre_rotate=False)
+            img_moving, mask_moving = fetch_image_mask_pair(leaf, moving_img_ind, img_scale="roi", erase_markers=erosion, pre_rotate=False)
+        elif method == "LoFTR + TPS ROI with Markers":
+            img_fixed, mask_fixed = fetch_image_mask_pair(leaf, fixed_img_ind, img_scale="roi", erase_markers=no_erosion, pre_rotate=False)
+            img_moving, mask_moving = fetch_image_mask_pair(leaf, moving_img_ind, img_scale="roi", erase_markers=no_erosion, pre_rotate=False)
+        elif method == "LoFTR + TPS ROI Pre-Rotated":
+            img_fixed, mask_fixed = fetch_image_mask_pair(leaf, fixed_img_ind, img_scale="roi", erase_markers=erosion, pre_rotate=True)
+            img_moving, mask_moving = fetch_image_mask_pair(leaf, moving_img_ind, img_scale="roi", erase_markers=erosion, pre_rotate=True)
+        elif method == "LoFTR + TPS ROI Pre-Rotated with Markers":
+            img_fixed, mask_fixed = fetch_image_mask_pair(leaf, fixed_img_ind, img_scale="roi", erase_markers=no_erosion, pre_rotate=True)
+            img_moving, mask_moving = fetch_image_mask_pair(leaf, moving_img_ind, img_scale="roi", erase_markers=no_erosion, pre_rotate=True)
+        elif method == "LoFTR + TPS Full":
+            img_fixed, mask_fixed = fetch_image_mask_pair(leaf, fixed_img_ind, img_scale="full", erase_markers=erosion, pre_rotate=False)
+            img_moving, mask_moving = fetch_image_mask_pair(leaf, moving_img_ind, img_scale="full", erase_markers=erosion, pre_rotate=False)
+        elif method == "LoFTR + TPS Full with Markers":
+            img_fixed, mask_fixed = fetch_image_mask_pair(leaf, fixed_img_ind, img_scale="full", erase_markers=no_erosion, pre_rotate=False)
+            img_moving, mask_moving = fetch_image_mask_pair(leaf, moving_img_ind, img_scale="full", erase_markers=no_erosion, pre_rotate=False)
+        elif method == "LoFTR + TPS Full Pre-Rotated":
+            img_fixed, mask_fixed = fetch_image_mask_pair(leaf, fixed_img_ind, img_scale="full", erase_markers=erosion, pre_rotate=True)
+            img_moving, mask_moving = fetch_image_mask_pair(leaf, moving_img_ind, img_scale="full", erase_markers=erosion, pre_rotate=True)
+        elif method == "LoFTR + TPS Full Pre-Rotated with Markers":
+            img_fixed, mask_fixed = fetch_image_mask_pair(leaf, fixed_img_ind, img_scale="full", erase_markers=no_erosion, pre_rotate=True)
+            img_moving, mask_moving = fetch_image_mask_pair(leaf, moving_img_ind, img_scale="full", erase_markers=no_erosion, pre_rotate=True)
+        else:
+            raise ValueError(f'Unknown registration method {method}')
+
+        # resize
+        img_fixed, img_moving, mask_fixed, mask_moving = match_sizes_resize(img_fixed, img_moving, mask_fixed, mask_moving)
+
+        if plot_masked_images:
+            fig, ax = plot_image_pair(img_fixed, img_moving, fixed_img_ind, moving_img_ind, title="Masked out input images", title_offset=0.7)
+            fig.show()
+            fig, ax = plot_image_pair(mask_fixed, mask_moving, fixed_img_ind, moving_img_ind, title="corresponding masks", title_offset=0.7)
+            fig.show()
+
+        # register
+        warped_moving_img, warped_moving_mask = register_single_image(img_fixed, img_moving, mask_fixed=mask_fixed, mask_moving=mask_moving, smoothing=smoothing, return_tps=False, plot_loftr_matches=False, warp_consistency=warp_consistency, match_filtering=match_filtering, verbose=verbose)
+        
+        return img_fixed, warped_moving_img, mask_fixed, warped_moving_mask
+
+
 def register_leaf_seq_individual(
     leaf: LeafDataset, 
     smoothing: float=0.0, 
     return_masks: bool=True,
-    use_skimage: bool=False, 
     image_preprocessing: dict=PREPROCESSING_DEFAULT,
     warp_consistency: dict=CONSISTENCY_DEFAULT,
     match_filtering: dict=FILTERING_DEFAULT,
@@ -262,10 +288,9 @@ def register_leaf_seq_individual(
     For the given leaf, registers all leaves using individual registration.
 
     Args:
-        leaf:
+        leaf: leaf sequence to register
         smoothing: smoothing hyperparameter. higher values lead to more "rigid" transforms
         return_masks: whether to return masks of registered images
-        use_skimage
         image_preprocessing: dictionary specifying parameters for image preprocessing, such as image scale, whether to pre-rotate, and parameters of marker erosion
         warp_consistency: dictionary specifying parameters for warp consistency. to disable warp consistency, set it to None.
         match_filtering: dictionary specifying parameters for match filtering/subsampling, such as filtering strategy, target number of landmarks, and minimum confidence threshold.
@@ -284,7 +309,7 @@ def register_leaf_seq_individual(
         masks = []
 
     for ind in range(leaf.n_leaves):
-        img, mask = img_moving, mask_moving = fetch_image_mask_pair(leaf, ind, **image_preprocessing)
+        img, mask = fetch_image_mask_pair(leaf, ind, **image_preprocessing)
         imgs.append(img)
         if return_masks:
             masks.append(mask)
@@ -308,10 +333,7 @@ def register_leaf_seq_individual(
             continue
 
         # register
-        if use_skimage:
-            img_moving, mask_moving = register_loftr_tps_skimage(imgs[0], imgs[ind], mask_moving=masks[ind], verbose=verbose, plot_loftr_matches=False, return_tps=False)    
-        else:
-            img_moving, mask_moving = register_single_image(imgs[0], imgs[ind], mask_fixed=masks[0], mask_moving=masks[ind], smoothing=smoothing, return_tps=False, plot_loftr_matches=False, warp_consistency=warp_consistency, match_filtering=match_filtering, verbose=verbose)
+        img_moving, mask_moving = register_single_image(imgs[0], imgs[ind], mask_fixed=masks[0], mask_moving=masks[ind], smoothing=smoothing, return_tps=False, plot_loftr_matches=False, warp_consistency=warp_consistency, match_filtering=match_filtering, verbose=verbose)
 
         registered_imgs.append(img_moving)
         if return_masks:
@@ -322,12 +344,11 @@ def register_leaf_seq_individual(
     else:
         return registered_imgs
 
-# TODO: handle skimage
+
 def register_leaf_seq_sequential(
     leaf: LeafDataset, 
     smoothing: float=0.0, 
     return_masks: bool=True,
-    use_skimage: bool=False, 
     image_preprocessing: dict=PREPROCESSING_DEFAULT,
     warp_consistency: dict=CONSISTENCY_DEFAULT,
     match_filtering: dict=FILTERING_DEFAULT,
@@ -337,10 +358,9 @@ def register_leaf_seq_sequential(
     For the given leaf, registers all leaves using sequential registration.
 
     Args:
-        leaf:
+        leaf: leaf sequence to register
         smoothing: smoothing hyperparameter. higher values lead to more "rigid" transforms
         return_masks: whether to return masks of registered images
-        use_skimage
         image_preprocessing: dictionary specifying parameters for image preprocessing, such as image scale, whether to pre-rotate, and parameters of marker erosion
         warp_consistency: dictionary specifying parameters for warp consistency. to disable warp consistency, set it to None.
         match_filtering: dictionary specifying parameters for match filtering/subsampling, such as filtering strategy, target number of landmarks, and minimum confidence threshold.
@@ -359,7 +379,7 @@ def register_leaf_seq_sequential(
     if verbose:
         print("Fechting images...")
     for ind in range(leaf.n_leaves):
-        img, mask = img_moving, mask_moving = fetch_image_mask_pair(leaf, ind, **image_preprocessing)
+        img, mask = fetch_image_mask_pair(leaf, ind, **image_preprocessing)
         imgs.append(img)
         if return_masks:
             masks.append(mask)
@@ -378,10 +398,7 @@ def register_leaf_seq_sequential(
         
         if imgs[ind] is None: # if image data is missing, add identity transform to stack
             registered_imgs.append(None)
-            if use_skimage:
-                tps[ind] = AffineTransform() # identity transform
-            else:
-                tps[ind] = None
+            tps[ind] = None
             if return_masks:
                 registered_masks.append(None)
             continue
@@ -390,55 +407,43 @@ def register_leaf_seq_sequential(
         while imgs[ind-j] is None: # register to latest image that *isn't* missing
             j += 1
         
-        if use_skimage:
-            tps[ind] = register_loftr_tps_skimage(imgs[ind-j], imgs[ind], threshold=0.5, verbose=verbose, plot_loftr_matches=False, return_tps=True)
-            tps_chain = invert_list(tps, ind) # get inverted list of tps transforms
-            coord_map = compose_tps(tps_chain)
+
+        out = fetch_keypoints(
+            imgs[ind-j],
+            imgs[ind], 
+            masks[ind-j],
+            masks[ind],
+            warp_consistency,
+            match_filtering,
+            verbose=verbose
+        )
+        if 'rotated_moving_img' in out:
+            # print("Rotation check")
+            imgs[ind] = out['rotated_moving_img']
+            masks[ind] = out['rotated_moving_mask']
+        
+
+        mkpts0_filtered = out['mkpts0_filtered']
+        mkpts1_filtered = out['mkpts1_filtered']
+
+        if len(mkpts0_filtered) > 3: # ensure there are enough keypts to compute TPS
+            # fit tps
+            tps[ind] = fit_tps_torch(mkpts0_filtered, mkpts1_filtered, alpha=smoothing)
 
             # warp images
-            registered_imgs.append( warp_tps_skimage(imgs[ind], coord_map, verbose=verbose) )
+            if verbose:
+                print("Warping Moving Image...")
+            registered_imgs.append( warp_tps_torch(tps[:ind+1], imgs[ind]) )
             if return_masks:
-                # converting mask to bool makes warp use nearest-neighbor interpolation
-                registered_masks.append( warp_tps_skimage(masks[ind].bool(), coord_map, verbose=verbose) )
-        
+                registered_masks.append( warp_tps_torch(tps[:ind+1], masks[ind], interpolation_mode='nearest') )
         else:
-
-            out = fetch_keypoints(
-                imgs[ind-j],
-                imgs[ind], 
-                masks[ind-j],
-                masks[ind],
-                warp_consistency,
-                match_filtering,
-                verbose=verbose
-            )
-            if 'rotated_moving_img' in out:
-                print("Rotation chekc")
-                imgs[ind] = out['rotated_moving_img']
-                masks[ind] = out['rotated_moving_mask']
-            
-
-            mkpts0_filtered = out['mkpts0_filtered']
-            mkpts1_filtered = out['mkpts1_filtered']
-
-            if len(mkpts0_filtered) > 3: # ensure there are enough keypts to compute TPS
-                # fit tps
-                tps[ind] = fit_tps_torch(mkpts0_filtered, mkpts1_filtered, alpha=smoothing)
-
-                # warp images
-                if verbose:
-                    print("Warping Moving Image...")
-                registered_imgs.append( warp_tps_torch(tps[:ind+1], imgs[ind]) )
-                if return_masks:
-                    registered_masks.append( warp_tps_torch(tps[:ind+1], masks[ind], interpolation_mode='nearest') )
-            else:
-                print(f"Not enough matches for TPS found at index {ind}")
-                imgs[ind] = None # ensures that subsequent images skip this one
-                masks[ind] = None
-                registered_imgs.append(None)
-                tps[ind] = None
-                if return_masks:
-                    registered_masks.append(None)
+            print(f"Not enough matches for TPS found at index {ind}")
+            imgs[ind] = None # ensures that subsequent images skip this one
+            masks[ind] = None
+            registered_imgs.append(None)
+            tps[ind] = None
+            if return_masks:
+                registered_masks.append(None)
 
     if return_masks:
         return registered_imgs, registered_masks
@@ -520,12 +525,11 @@ def semi_seq_criterion(criterion_type: str="coverage", params: dict={'dist_thres
     else:
         raise ValueError(f"Unknown criterion type '{criterion_type}'. Expected one of 'coverage' or 'num_conf_matches'.")  
 
-# TODO: handle skimage
+
 def register_leaf_seq_semi_sequential(
     leaf: LeafDataset, 
     smoothing: float=0.0, 
-    return_masks: bool=True,
-    use_skimage: bool=False, 
+    return_masks: bool=True, 
     image_preprocessing: dict=PREPROCESSING_DEFAULT,
     warp_consistency: dict=CONSISTENCY_DEFAULT,
     match_filtering: dict=FILTERING_DEFAULT,
@@ -539,7 +543,6 @@ def register_leaf_seq_semi_sequential(
         leaf: leaf sequence to register
         smoothing: smoothing hyperparameter. higher values lead to more "rigid" transforms
         return_masks: whether to return masks of registered images
-        use_skimage
         image_preprocessing: dictionary specifying parameters for image preprocessing, such as image scale, whether to pre-rotate, and parameters of marker erosion
         warp_consistency: dictionary specifying parameters for warp consistency. to disable warp consistency, set it to None.
         match_filtering: dictionary specifying parameters for match filtering/subsampling, such as filtering strategy, target number of landmarks, and minimum confidence threshold.
@@ -584,159 +587,103 @@ def register_leaf_seq_semi_sequential(
                 registered_masks.append(None)
             continue
 
-        if use_skimage:
-            mkpts0, mkpts1, confidence, _, n_matches = loftr_match(imgs[anchor[-1]], imgs[ind], masks[anchor[-1]], masks[ind], verbose=verbose, return_n_matches=True)
-            # warped_moving_img, warped_moving_mask, tps[ind] = register_loftr_tps(imgs[ind-1], imgs[ind], threshold=0.5, verbose=False, plot_loftr_matches=False, warp_moving=True, return_tps=True)
+        
+        # fetch keypoints to anchor image    
+        out = fetch_keypoints(
+            imgs[anchor[-1]],
+            imgs[ind], 
+            masks[anchor[-1]],
+            masks[ind],
+            warp_consistency,
+            match_filtering,
+            verbose=verbose
+        )
+        if 'rotated_moving_img' in out:
+            # print("Rotation check")
+            imgs[ind] = out['rotated_moving_img']
+            masks[ind] = out['rotated_moving_mask']
+
+
+        # evaluate quality criterion 
+        if semi_seq_criterion(mask=masks[ind], keypoints=out['mkpts1'], **semi_sequential_criterion):
+        # if semi_seq_criterion(confidence=out['confidence'], **semi_sequential_criterion):
             
-            if warp_consistency is not None: # filter out inconsistent matches
-                mkpts0, mkpts1, confidence = check_warp_consistency(imgs[anchor[-1]], imgs[ind], masks[ind], plot_matches=False, verbose=verbose, **warp_consistency)
-
-            if condition(confidence, conf_threshold=0.8):
-                # if condition is satisfied, warp moving image
-
-                _, tps[ind] = tps_skimage(mkpts0, mkpts1, confidence, threshold, imgs[ind], warp_moving=False, verbose=verbose)
-                
-            elif ind != 1: # otherwise, register to a more recent image
-                
-                # make sure we don't link back to an empty picture
-                j = ind-1
-                while imgs[j] is None: # look for most recent non-None image
-                    j -= 1
+            # if condition is satisfied, fit TPS
+            mkpts0_filtered = out['mkpts0_filtered']
+            mkpts1_filtered = out['mkpts1_filtered']
+            tps[ind] = fit_tps_torch(mkpts0_filtered, mkpts1_filtered, alpha=smoothing)
+            
+        elif ind != 1: # otherwise, register to a more recent image
+            
+            # make sure we don't link back to an empty picture
+            j = ind-1
+            while imgs[j] is None: # look for most recent non-None image
+                j -= 1
+            
+            if j != anchor[-1]: # new anchor isn't just the old one again
                 anchor.append(j) # set new anchor
 
                 # register to new anchor
-                mkpts0, mkpts1, confidence, _, n_matches = loftr_match(imgs[anchor[-1]], imgs[ind], masks[anchor[-1]], masks[ind], verbose=verbose, return_n_matches=True)
-                
-                _, tps[ind] = tps_skimage(mkpts0, mkpts1, confidence, threshold, imgs[ind], warp_moving=False, verbose=verbose)
-            else:
-                print(f"Warning! Only few matches found between first and second image of sequence")
-                _, tps[ind] = tps_skimage(mkpts0, mkpts1, confidence, threshold, imgs[ind], warp_moving=False, verbose=verbose)
+                out = fetch_keypoints(
+                    imgs[anchor[-1]],
+                    imgs[ind], 
+                    masks[anchor[-1]],
+                    masks[ind],
+                    warp_consistency,
+                    match_filtering,
+                    verbose=verbose
+                )
+                if 'rotated_moving_img' in out:
+                    # print("Rotation check")
+                    imgs[ind] = out['rotated_moving_img']
+                    masks[ind] = out['rotated_moving_mask']
 
+            mkpts0_filtered = out['mkpts0_filtered']
+            mkpts1_filtered = out['mkpts1_filtered']
 
-            # sanity check
-            # print(f"----- Index {ind} -----------")
-            # sanity[ind] = f"{anchor[-1]}-{ind}"
-            # relevant_sanity = [sanity[i] for i in anchor + [ind]]
-            # sanity_chain = invert_list(relevant_sanity, -1)
-            # print(f" anchors: {anchor}")
-            # print(f"full chain: {sanity}")
-            # print(f"sliced chain: {relevant_sanity}")
-            # print(f"inverted chain: {sanity_chain}")
-
-            
-            relevant_tps = [tps[i] for i in anchor + [ind]] # pick out transforms for relevant steps
-            tps_chain = invert_list(relevant_tps, -1) # invert the list
-            # coord_map = compose_tps(tps_chain) # compose the transforms
-            # print(len(tps_chain))
-            if len(tps_chain) > 1:
-                coord_map = compose_tps(tps_chain) # compose the transforms
-            else:
-                coord_map = tps_chain[0]
-            
-
-            # warp images
-            registered_imgs.append( warp_tps_skimage(imgs[ind], coord_map, verbose=verbose) )
-            if return_masks:
-                # converting mask to bool makes warp use nearest-neighbor interpolation
-                registered_masks.append( warp_tps_skimage(masks[ind].bool(), coord_map, verbose=verbose) )
-
-        else:
-            
-            out = fetch_keypoints(
-                imgs[anchor[-1]],
-                imgs[ind], 
-                masks[anchor[-1]],
-                masks[ind],
-                warp_consistency,
-                match_filtering,
-                verbose=verbose
-            )
-            if 'rotated_moving_img' in out:
-                print("Rotation chekc")
-                imgs[ind] = out['rotated_moving_img']
-                masks[ind] = out['rotated_moving_mask']
-
-
-            # print(semi_sequential_criterion)
-            # evaluate quality criterion 
-            if semi_seq_criterion(mask=masks[ind], keypoints=out['mkpts1'], **semi_sequential_criterion):
-            # if semi_seq_criterion(confidence=out['confidence'], **semi_sequential_criterion):
-                
-                # if condition is satisfied, warp moving image
-                mkpts0_filtered = out['mkpts0_filtered']
-                mkpts1_filtered = out['mkpts1_filtered']
+            # check if we have enough matches for tps
+            if len(mkpts0_filtered) > 3:
                 tps[ind] = fit_tps_torch(mkpts0_filtered, mkpts1_filtered, alpha=smoothing)
-                
-            elif ind != 1: # otherwise, register to a more recent image
-                
-                # make sure we don't link back to an empty picture
-                j = ind-1
-                while imgs[j] is None: # look for most recent non-None image
-                    j -= 1
-                
-                if j != anchor[-1]: # new anchor isn't just the old one again
-                    anchor.append(j) # set new anchor
-
-                    # register to new anchor
-                    out = fetch_keypoints(
-                        imgs[anchor[-1]],
-                        imgs[ind], 
-                        masks[anchor[-1]],
-                        masks[ind],
-                        warp_consistency,
-                        match_filtering,
-                        verbose=verbose
-                    )
-                    if 'rotated_moving_img' in out:
-                        print("Rotation chekc")
-                        imgs[ind] = out['rotated_moving_img']
-                        masks[ind] = out['rotated_moving_mask']
-
-                mkpts0_filtered = out['mkpts0_filtered']
-                mkpts1_filtered = out['mkpts1_filtered']
-
-                # check if we have enough matches for tps
-                if len(mkpts0_filtered) > 3:
-                    tps[ind] = fit_tps_torch(mkpts0_filtered, mkpts1_filtered, alpha=smoothing)
-                else:
-                    print(f"Not enough matches for TPS found at index {ind}")
-                    imgs[ind] = None # to prevent other images from back-linking to this
-                    masks[ind] = None
-                    tps[ind] = None
-                    registered_imgs.append(None)                    
-                    if return_masks:
-                        registered_masks.append(None)
-                    continue
             else:
-                # print(f"Warning! Only few matches found between first and second image of sequence. Using {len(mkpts0_filtered)} Matches.")
-                mkpts0_filtered = out['mkpts0_filtered']
-                mkpts1_filtered = out['mkpts1_filtered']
-                print(f"Warning! Poor distribution of matches found between first and second image of sequence. Using {len(mkpts0_filtered)} Matches.")
+                print(f"Not enough matches for TPS found at index {ind}")
+                imgs[ind] = None # to prevent other images from back-linking to this
+                masks[ind] = None
+                tps[ind] = None
+                registered_imgs.append(None)                    
+                if return_masks:
+                    registered_masks.append(None)
+                continue
+        else:
+            # condition failed between first and second image => no anchor we can reset to
+            mkpts0_filtered = out['mkpts0_filtered']
+            mkpts1_filtered = out['mkpts1_filtered']
+            print(f"Warning! Poor distribution of matches found between first and second image of sequence. Using {len(mkpts0_filtered)} Matches.")
 
-                # check if we have enough matches for tps
-                if len(mkpts0_filtered) > 3:
-                    tps[ind] = fit_tps_torch(mkpts0_filtered, mkpts1_filtered, alpha=smoothing)
-                else:
-                    print(f"Not enough matches for TPS found at index {ind}")
-                    imgs[ind] = None # to prevent other images from back-linking to this
-                    masks[ind] = None
-                    tps[ind] = None
-                    registered_imgs.append(None)                    
-                    if return_masks:
-                        registered_masks.append(None)
-                    continue
+            # check if we have enough matches for tps
+            if len(mkpts0_filtered) > 3:
+                tps[ind] = fit_tps_torch(mkpts0_filtered, mkpts1_filtered, alpha=smoothing)
+            else:
+                print(f"Not enough matches for TPS found at index {ind}")
+                imgs[ind] = None # to prevent other images from back-linking to this
+                masks[ind] = None
+                tps[ind] = None
+                registered_imgs.append(None)                    
+                if return_masks:
+                    registered_masks.append(None)
+                continue
 
-            
-            relevant_tps = [tps[i] for i in anchor + [ind]] # pick out transforms for relevant steps          
+        # pick out transforms for relevant steps          
+        relevant_tps = [tps[i] for i in anchor + [ind]] 
 
-            # warp images
-            if verbose:
-                print("Warping Moving Image...")
-            registered_imgs.append( warp_tps_torch(relevant_tps[:ind+1], imgs[ind]) )
-            if return_masks:
-                registered_masks.append( warp_tps_torch(relevant_tps[:ind+1], masks[ind], interpolation_mode='nearest') )
+        # warp images
+        if verbose:
+            print("Warping Moving Image...")
+        registered_imgs.append( warp_tps_torch(relevant_tps[:ind+1], imgs[ind]) )
+        if return_masks:
+            registered_masks.append( warp_tps_torch(relevant_tps[:ind+1], masks[ind], interpolation_mode='nearest') )
     
-    print(f"Anchors: {[int(a) for a in anchor]}")
+    if verbose:
+        print(f"Anchors: {[int(a) for a in anchor]}")
     if return_masks:
         return registered_imgs, registered_masks
     else:
@@ -790,3 +737,264 @@ def fetch_registered_image_mask_seq(leaf: LeafDataset, registration_method: str,
             raise ValueError(f'Unknown registration method {registration_method}')
         
         return imgs, masks
+
+
+
+
+
+# ----- Alternative implementations of registration functions using skimage -----
+# (Note that this implementation is significantly slower and was thus discarded.
+#  We leave it here for reference and potential future use, but note that not all recenet developments are incorporate.)
+
+def register_leaf_seq_individual_skimage(
+    leaf: LeafDataset,  
+    return_masks: bool=True,
+    image_preprocessing: dict=PREPROCESSING_DEFAULT,
+    warp_consistency: dict=CONSISTENCY_DEFAULT,
+    match_filtering: dict=FILTERING_DEFAULT,
+    verbose: bool=False,    
+    ):
+    """
+    For the given leaf, registers all leaves using individual registration and Skimage for TPS.
+
+    Args:
+        leaf:return_masks: whether to return masks of registered images
+        image_preprocessing: dictionary specifying parameters for image preprocessing, such as image scale, whether to pre-rotate, and parameters of marker erosion
+        warp_consistency: dictionary specifying parameters for warp consistency. to disable warp consistency, set it to None.
+        match_filtering: dictionary specifying parameters for match filtering/subsampling, such as filtering strategy, target number of landmarks, and minimum confidence threshold.
+        verbose: Whether to produce detailed output (for diagnostic purposes)
+
+    Returns:
+        List[torch.Tensor]: list of registered images
+        (List[torch.Tensor]: list of masks for registered images. Only returned if return_masks==True.)
+    """
+    
+    # retrieve images
+    if verbose:
+        print("Fetching leaves...")
+    imgs = []
+    if return_masks:
+        masks = []
+
+    for ind in range(leaf.n_leaves):
+        img, mask = fetch_image_mask_pair(leaf, ind, **image_preprocessing)
+        imgs.append(img)
+        if return_masks:
+            masks.append(mask)
+
+    # resize
+    imgs, masks = match_sizes_resize_batch(imgs, masks)
+    
+    registered_imgs = [imgs[0]]
+    if return_masks:
+        registered_masks = [masks[0]]
+    
+    moving_indices = np.arange(1, leaf.n_leaves)
+    for ind in tqdm(moving_indices, "Registering Individually"):
+        
+        # handle missing data cases
+        if imgs[ind] is None:
+            print(f"No image data for index {ind}")
+            registered_imgs.append(None)
+            if return_masks:
+                registered_masks.append(None)
+            continue
+
+        # register
+        img_moving, mask_moving = register_loftr_tps_skimage(imgs[0], imgs[ind], mask_moving=masks[ind], verbose=verbose, plot_loftr_matches=False, return_tps=False)    
+
+
+        registered_imgs.append(img_moving)
+        if return_masks:
+            registered_masks.append(mask_moving)
+
+    if return_masks:
+        return registered_imgs, registered_masks
+    else:
+        return registered_imgs
+
+
+def register_leaf_seq_sequential_skimage(
+    leaf: LeafDataset, 
+    return_masks: bool=True,
+    image_preprocessing: dict=PREPROCESSING_DEFAULT,
+    warp_consistency: dict=CONSISTENCY_DEFAULT,
+    match_filtering: dict=FILTERING_DEFAULT,
+    verbose: bool=False,
+    ):
+    """
+    For the given leaf, registers all leaves using sequential registration and using Skimage for TPS.
+    Note that with Skimage composing TPS transforms is very timing consuming.
+
+    Args:
+        leaf: leaf sequence to register
+        return_masks: whether to return masks of registered images
+        image_preprocessing: dictionary specifying parameters for image preprocessing, such as image scale, whether to pre-rotate, and parameters of marker erosion
+        warp_consistency: dictionary specifying parameters for warp consistency. to disable warp consistency, set it to None.
+        match_filtering: dictionary specifying parameters for match filtering/subsampling, such as filtering strategy, target number of landmarks, and minimum confidence threshold.
+        verbose: Whether to produce detailed output (for diagnostic purposes)
+
+    Returns:
+        List[torch.Tensor]: list of registered images
+        (List[torch.Tensor]: list of masks for registered images. Only returned if return_masks==True.)
+    """
+    
+    # retrieve images
+    imgs = []
+    if return_masks:
+        masks = []
+
+    if verbose:
+        print("Fechting images...")
+    for ind in range(leaf.n_leaves):
+        img, mask = fetch_image_mask_pair(leaf, ind, **image_preprocessing)
+        imgs.append(img)
+        if return_masks:
+            masks.append(mask)
+
+    # resize
+    imgs, masks = match_sizes_resize_batch(imgs, masks)
+    
+    tps = [None]*leaf.n_leaves
+    registered_imgs = [imgs[0]]
+    if return_masks:
+        registered_masks = [masks[0]]
+    moving_indices = np.arange(1, leaf.n_leaves)
+    for ind in tqdm(moving_indices, "Registering Sequentially"):
+        
+        # get TPS transform from current image to previous
+        
+        if imgs[ind] is None: # if image data is missing, add identity transform to stack
+            registered_imgs.append(None)
+            tps[ind] = AffineTransform() # identity transform
+            if return_masks:
+                registered_masks.append(None)
+            continue
+
+        j = 1
+        while imgs[ind-j] is None: # register to latest image that *isn't* missing
+            j += 1
+        
+        if use_skimage:
+            tps[ind] = register_loftr_tps_skimage(imgs[ind-j], imgs[ind], threshold=0.5, verbose=verbose, plot_loftr_matches=False, return_tps=True)
+            tps_chain = invert_list(tps, ind) # get inverted list of tps transforms
+            coord_map = compose_tps(tps_chain)
+
+            # warp images
+            registered_imgs.append( warp_tps_skimage(imgs[ind], coord_map, verbose=verbose) )
+            if return_masks:
+                # converting mask to bool makes warp use nearest-neighbor interpolation
+                registered_masks.append( warp_tps_skimage(masks[ind].bool(), coord_map, verbose=verbose) )
+        
+
+    if return_masks:
+        return registered_imgs, registered_masks
+    else:
+        return registered_imgs
+
+def register_leaf_seq_semi_sequential_skimage(
+    leaf: LeafDataset, 
+    return_masks: bool=True,
+    image_preprocessing: dict=PREPROCESSING_DEFAULT,
+    warp_consistency: dict=CONSISTENCY_DEFAULT,
+    match_filtering: dict=FILTERING_DEFAULT,
+    semi_sequential_criterion: dict=CRITERION_DEFAULT,
+    verbose: bool=False,
+    ):
+    """
+    For the given leaf, registers all leaves using individual registration.
+
+    Args:
+        leaf: leaf sequence to register
+        return_masks: whether to return masks of registered images
+        image_preprocessing: dictionary specifying parameters for image preprocessing, such as image scale, whether to pre-rotate, and parameters of marker erosion
+        warp_consistency: dictionary specifying parameters for warp consistency. to disable warp consistency, set it to None.
+        match_filtering: dictionary specifying parameters for match filtering/subsampling, such as filtering strategy, target number of landmarks, and minimum confidence threshold.
+        verbose: Whether to produce detailed output (for diagnostic purposes)
+
+    Returns:
+        List[torch.Tensor]: list of registered images
+        (List[torch.Tensor]: list of masks for registered images. Only returned if return_masks==True.)
+    """
+
+    # retrieve images
+    imgs = []
+    if return_masks:
+        masks = []
+
+    if verbose:
+        print("Fechting images...")
+    for ind in range(leaf.n_leaves):
+        img, mask = fetch_image_mask_pair(leaf, ind, **image_preprocessing)
+        imgs.append(img)
+        if return_masks:
+            masks.append(mask)
+            
+
+    # resize
+    imgs, masks = match_sizes_resize_batch(imgs, masks)
+    
+    tps = [None]*leaf.n_leaves
+    registered_imgs = [imgs[0]]
+    if return_masks:
+        registered_masks = [masks[0]]
+    moving_indices = np.arange(1, leaf.n_leaves)
+    anchor = [0]
+
+    for ind in tqdm(moving_indices, "Registering Semi-Sequentially"):
+
+        # skip images with missing data
+        if imgs[ind] is None:
+            print(f"No image data for index {ind}")
+            registered_imgs.append(None)
+            if return_masks:
+                registered_masks.append(None)
+            continue
+
+        # fetch keypoints to anchor image
+        mkpts0, mkpts1, confidence, _, n_matches = loftr_match(imgs[anchor[-1]], imgs[ind], masks[anchor[-1]], masks[ind], verbose=verbose, return_n_matches=True)
+        
+        if semi_seq_criterion(mask=masks[ind], keypoints=out['mkpts1'], **semi_sequential_criterion):
+            # if condition is satisfied, fit TPS
+            _, tps[ind] = tps_skimage_confidence(mkpts0, mkpts1, confidence, threshold, imgs[ind], warp_moving=False, verbose=verbose)
+            
+        elif ind != 1: # otherwise, register to a more recent image
+            
+            # make sure we don't link back to an empty picture
+            j = ind-1
+            while imgs[j] is None: # look for most recent non-None image
+                j -= 1
+            anchor.append(j) # set new anchor
+
+            # register to new anchor
+            mkpts0, mkpts1, confidence, _, n_matches = loftr_match(imgs[anchor[-1]], imgs[ind], masks[anchor[-1]], masks[ind], verbose=verbose, return_n_matches=True)
+            
+            _, tps[ind] = tps_skimage_confidence(mkpts0, mkpts1, confidence, threshold, imgs[ind], warp_moving=False, verbose=verbose)
+        else:
+            # condition failed between first and second image => no anchor we can reset to
+            print(f"Warning! Poor distribution of matches found between first and second image of sequence.")
+            _, tps[ind] = tps_skimage_confidence(mkpts0, mkpts1, confidence, threshold, imgs[ind], warp_moving=False, verbose=verbose)
+
+        
+        # compose TPS transforms
+        relevant_tps = [tps[i] for i in anchor + [ind]] # pick out transforms for relevant steps
+        tps_chain = invert_list(relevant_tps, -1) # invert the list
+        if len(tps_chain) > 1:
+            coord_map = compose_tps(tps_chain) # compose the transforms
+        else:
+            coord_map = tps_chain[0]
+        
+
+        # warp images
+        registered_imgs.append( warp_tps_skimage(imgs[ind], coord_map, verbose=verbose) )
+        if return_masks:
+            # converting mask to bool makes warp use nearest-neighbor interpolation
+            registered_masks.append( warp_tps_skimage(masks[ind].bool(), coord_map, verbose=verbose) )
+
+    
+    if verbose:
+        print(f"Anchors: {[int(a) for a in anchor]}")
+    if return_masks:
+        return registered_imgs, registered_masks
+    else:
+        return registered_imgs

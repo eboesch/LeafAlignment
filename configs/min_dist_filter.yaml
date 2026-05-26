@@ -1,6 +1,5 @@
 smoothing: 100
 return_masks: True
-use_skimage: False
 verbose: False
 
 image_preprocessing:
