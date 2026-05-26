@@ -7,7 +7,7 @@ from skimage.transform import AffineTransform
 from utils import convert_image_to_tensor, match_sizes_resize, match_sizes_resize_batch, invert_list, affine_warp_expand, check_orientation, RandomHomography
 from masking import fetch_image_mask_pair, fetch_masked_image_seq
 from loftr import loftr_match, warp_tps_torch, fit_tps_torch, fetch_keypoints
-from loftr import loftr_match, tps_skimage_confidence, register_loftr_tps_skimage, warp_tps_skimage, compose_tps,
+from loftr import loftr_match, tps_skimage_confidence, register_loftr_tps_skimage, warp_tps_skimage, compose_tps
 from plotting import plot_image_pair, plot_overlay, plot_matches_conf, plot_match_coverage
 from DatasetTools.LeafImageSeries import LeafDataset
 
