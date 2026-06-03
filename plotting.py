@@ -13,7 +13,7 @@ from utils import convert_image_to_tensor
 
 
 
-def plot_matches(img_fix, keypts_fix, img_mov, keypts_mov, inliers, N_show: int=100, inliers_only: bool=True, vertical: bool=True):
+def plot_matches(img_fix, keypts_fix, img_mov, keypts_mov, inliers: np.array=None, N_show: int=100, inliers_only: bool=True, vertical: bool=True):
     """
     Plots matches/correspondences between images, connected by lines.
 
@@ -169,7 +169,7 @@ def plot_matches_conf(img_fix, keypts_fix, img_mov, keypts_mov, confidence, N_sh
     return fig, ax
 
 
-def plot_match_coverage(img_fix, keypts_fix, img_mov, keypts_mov, confidence, title: str=None):
+def plot_match_coverage(img_fix, keypts_fix, img_mov, keypts_mov, confidence, title: str=None, vertical: bool=False):
     """
     Plots distribution of matches/correspondences across the image, with matches colored by confidence.
     
@@ -194,7 +194,10 @@ def plot_match_coverage(img_fix, keypts_fix, img_mov, keypts_mov, confidence, ti
         img_mov = K.tensor_to_image(img_mov)
 
 
-    fig, (ax1, ax2) = plt.subplots(ncols=2, figsize=[12, 6], sharex=True, sharey=True)
+    if vertical:
+        fig, (ax1, ax2) = plt.subplots(nrows=2, figsize=[8, 4], sharex=True, sharey=True)
+    else:
+        fig, (ax1, ax2) = plt.subplots(ncols=2, figsize=[12, 6], sharex=True, sharey=True)
 
     cmap = 'viridis'
 

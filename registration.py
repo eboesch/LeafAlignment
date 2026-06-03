@@ -875,16 +875,16 @@ def register_leaf_seq_sequential_skimage(
         while imgs[ind-j] is None: # register to latest image that *isn't* missing
             j += 1
         
-        if use_skimage:
-            tps[ind] = register_loftr_tps_skimage(imgs[ind-j], imgs[ind], threshold=0.5, verbose=verbose, plot_loftr_matches=False, return_tps=True)
-            tps_chain = invert_list(tps, ind) # get inverted list of tps transforms
-            coord_map = compose_tps(tps_chain)
+        
+        tps[ind] = register_loftr_tps_skimage(imgs[ind-j], imgs[ind], threshold=0.5, verbose=verbose, plot_loftr_matches=False, return_tps=True)
+        tps_chain = invert_list(tps, ind) # get inverted list of tps transforms
+        coord_map = compose_tps(tps_chain)
 
-            # warp images
-            registered_imgs.append( warp_tps_skimage(imgs[ind], coord_map, verbose=verbose) )
-            if return_masks:
-                # converting mask to bool makes warp use nearest-neighbor interpolation
-                registered_masks.append( warp_tps_skimage(masks[ind].bool(), coord_map, verbose=verbose) )
+        # warp images
+        registered_imgs.append( warp_tps_skimage(imgs[ind], coord_map, verbose=verbose) )
+        if return_masks:
+            # converting mask to bool makes warp use nearest-neighbor interpolation
+            registered_masks.append( warp_tps_skimage(masks[ind].bool(), coord_map, verbose=verbose) )
         
 
     if return_masks:
@@ -941,6 +941,8 @@ def register_leaf_seq_semi_sequential_skimage(
     moving_indices = np.arange(1, leaf.n_leaves)
     anchor = [0]
 
+    threshold = match_filtering['min_conf'] if match_filtering is not None else 0.5
+
     for ind in tqdm(moving_indices, "Registering Semi-Sequentially"):
 
         # skip images with missing data
@@ -954,7 +956,7 @@ def register_leaf_seq_semi_sequential_skimage(
         # fetch keypoints to anchor image
         mkpts0, mkpts1, confidence, _, n_matches = loftr_match(imgs[anchor[-1]], imgs[ind], masks[anchor[-1]], masks[ind], verbose=verbose, return_n_matches=True)
         
-        if semi_seq_criterion(mask=masks[ind], keypoints=out['mkpts1'], **semi_sequential_criterion):
+        if semi_seq_criterion(mask=masks[ind], keypoints=mkpts1, **semi_sequential_criterion):
             # if condition is satisfied, fit TPS
             _, tps[ind] = tps_skimage_confidence(mkpts0, mkpts1, confidence, threshold, imgs[ind], warp_moving=False, verbose=verbose)
             

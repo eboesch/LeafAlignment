@@ -32,8 +32,8 @@ def loftr_match(img_fix: torch.Tensor, img_mov: torch.Tensor, mask_fix: torch.Te
     Returns:
         Keypoints in fixed image
         Keypoints in moving image
-        Classification of inliers, using RANSAC/Fundamental matrix
         Confidence of matches
+        Classification of inliers, using RANSAC/Fundamental matrix
         (Dictionary of numbers of total matches, confident matches, inliers)
     """
 
@@ -196,76 +196,6 @@ def torch_tps(target_keypts: torch.Tensor, moving_keypts: torch.Tensor, moving_i
     warped = warp_tps_torch(tps, moving_img)
     return warped
 
-# TODO: deprecated? i.e. still needed?
-def register_loftr_tps(img_fixed: torch.Tensor, img_moving: torch.Tensor, threshold: float=0.5, smoothing: float=0.5, mask_moving: torch.Tensor=None, verbose: bool=False, plot_loftr_matches: bool=False, return_tps: bool=False):
-    """
-    Uses loftr to detect matches between the fixed and moving image, filters the matches by confidence, then uses TPS to transform the moving image
-    If a mask of the moving image is provided, it is also warped.
-    Optionally, the TPS transform can be returned.
-
-    Args:
-        img_fixed: fixed image
-        img_moving: moving image
-        threshold: minimum confidence threshold
-        smoothing: smoothing hyperparameter. higher values lead to more "rigid" transforms
-        mask_moving: Optional mask of moving image
-        verbose: Whether to produce detailed output (for diagnostic purposes)
-        plot_loftr_matches: whether to plot figures showing distribution of matches 
-        return_tps: whether to return the TPS
-
-    Returns:
-        torch.Tensor: registered moving image
-        (torch.Tensor: mask of registered moving image. only returned if mask of moving image is provided.)
-        (ThinPlateSpline: TPS object used to register the image. only returned if return_tps==True.)
-    """
-    if img_fixed is None or img_moving is None:
-        if return_tps:
-            if mask_moving is not None:
-                return None, None, None
-            else:
-                return None, None
-        else:
-            if mask_moving is not None:
-                return None, None
-            else:
-                return None
-
-    mkpts0, mkpts1, confidence, _, n_matches = loftr_match(img_fixed, img_moving, verbose=verbose, return_n_matches=True)
-
-    if plot_loftr_matches:
-        fig, ax = plot_matches_conf(img_fixed, mkpts0, img_moving, mkpts1, confidence, N_show=50, vertical=True)
-        fig.show()
-        fig, axs = plot_match_coverage(img_fixed, mkpts0, img_moving, mkpts1, confidence)
-        fig.show()
-    
-    if n_matches['conf_matches'] > 3:
-        kpts0, kpts1 = filter_matches_by_confidence(mkpts0, mkpts1, confidence, threshold, verbose=verbose)
-        if verbose:
-            print("Fitting TPS...")
-        tps = fit_tps_torch(kpts0, kpts1, alpha=smoothing)
-        if verbose:
-            print("Warping Moving Image...")
-        warped_moving_img = warp_tps_torch(tps, img_moving)
-        if mask_moving is not None:
-            if verbose:
-                print("Warping Moving Mask...")
-            warped_moving_mask = warp_tps_torch(tps, mask_moving, interpolation_mode='nearest')
-    else:
-        print("No enough matches for TPS found")
-        warped_moving_img = None
-        warped_moving_mask = None
-        tps = None
-    
-    if return_tps:
-        if mask_moving is not None:
-            return warped_moving_img, warped_moving_mask, tps
-        else:
-            return warped_moving_img, tps
-    else:
-        if mask_moving is not None:
-            return warped_moving_img, warped_moving_mask
-        else:
-            return warped_moving_img
 
 # ----- Alternative TPS implementation using Skimage -----
 # (Note that this implementation is significantly slower and doesn't expose a smoothing hyperparameter.
@@ -766,6 +696,7 @@ def filter_matches(mkpts0: torch.Tensor, mkpts1: torch.Tensor, confidence: torch
         mkpts1: (N, 2) array/tensor of keypoints in image 1
         confidence: (N,) match confidence
         img_shape: shape of the underlying image(s)
+        filtering_strategy: which strategy to use for filtering. One of "confidence", "grid", "clusters", "min_distance"
         n_target: targeted number of matches
         tol: tolerance indicating by how much the number of matches may deviate from the target 
         min_conf: confidence threshold. only matches with confidence above this threshold are considered
@@ -785,7 +716,7 @@ def filter_matches(mkpts0: torch.Tensor, mkpts1: torch.Tensor, confidence: torch
     else:
         raise ValueError(f"Unknown filtering strategy {strategy}. Expected on of 'confidence', 'grid', 'clusters', 'min_distance'.")
 
-# warp consistency ---------------
+# ----- warp consistency -----
 
 def nearest_neighbors(pts1: torch.Tensor, pts2: torch.Tensor):
     """
@@ -915,8 +846,8 @@ def plot_cycle_matches(img1: torch.Tensor, img2: torch.Tensor, img3: torch.Tenso
 def check_warp_consistency(
     img_fixed: torch.Tensor, 
     img_moving: torch.Tensor, 
-    mask_fixed: torch.Tensor,
-    mask_moving: torch.Tensor, 
+    mask_fixed: torch.Tensor=None,
+    mask_moving: torch.Tensor=None, 
     plot_matches: bool=False, 
     consistency_tolerance: float=10, 
     transform: dict={'type': 'rotation', 'params': {'rotation': -10}},
@@ -929,8 +860,8 @@ def check_warp_consistency(
     Args:
         img_fixed: fixed image 
         img_moving: moving image
-        mask_fixed: mask of fixed image
-        mask_moving: mask of moving image
+        mask_fixed: Optional mask of fixed image
+        mask_moving: Optional mask of moving image
         plot_matches: whether to plot figures showing distribution of matches and warp consistency cycles
         consistency_tolerance: threshold for displacement after traveling through the cycle. matches with larger displacement are discarded as inconsistent
         transform: dictionary specifying the transformation used to generate the third image. by default 'type'='rotation'. alternatively, 'type'='homography' is also supported.
@@ -951,7 +882,10 @@ def check_warp_consistency(
     if transform["type"] == "rotation":
         out = affine_warp_expand(img2, img2_mask, rot_angle_deg=transform['params']['rotation'])
         img3 = out["imgs"]
-        img3_mask = out["masks"]
+        if img2_mask is None:
+            img3_mask = None
+        else:
+            img3_mask = out["masks"]
     elif transform["type"] == "homography":
         hom = RandomHomography(img_fixed.shape[2], img_fixed.shape[3], distortion_scale=transform['params']['distortion_scale'])
         img3 = hom.warp_image(img_moving)
@@ -1005,7 +939,6 @@ def check_warp_consistency(
     return mkpts12_1[is_consistent], mkpts12_2[is_consistent], confidence_12[is_consistent]
 
 
-# TODO: check what happens if masks are None
 def fetch_keypoints(
     img_fixed: torch.Tensor,
     img_moving: torch.Tensor, 
